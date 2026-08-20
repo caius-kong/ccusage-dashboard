@@ -94,7 +94,7 @@ def _node() -> str:
     return n
 
 BUDGET = 300.0  # monthly cap in USD (override via --budget or CCUSAGE_BUDGET)
-TTL = {"/api/today": 15, "/api/week": 60, "/api/month": 60, "/api/range": 120, "/api/trend": 120}
+TTL = {"/api/today": 15, "/api/week": 60, "/api/month": 60, "/api/range": 120, "/api/trend": 120, "/api/sessions": 60}
 
 
 def run_ccusage(args: list[str], ttl: float) -> dict:
@@ -193,6 +193,81 @@ def trend(days: int = 30) -> dict:
     return {"start": start.isoformat(), "end": end.isoformat(), "days": out}
 
 
+def sessions(since_days: int = 30) -> dict:
+    """Return ccusage's session report, with each session's cwd (projectPath) when
+    ccusage provides it. Data comes 100% from ccusage — we only re-shape it.
+    """
+    data = run_ccusage(
+        ["session", "--by-agent", "--json", "--offline"],
+        TTL["/api/sessions"],
+    )
+    rows = data.get("session") or []
+
+    cutoff = date.today() - timedelta(days=since_days)
+    out = []
+    for r in rows:
+        meta = r.get("metadata") or {}
+        sid = r.get("period")  # session id in ccusage's session report
+        last_activity = meta.get("lastActivity") or ""
+        # date filter by last activity
+        if last_activity:
+            try:
+                act_date = date.fromisoformat(last_activity[:10])
+            except ValueError:
+                act_date = None
+            if act_date is not None and act_date < cutoff:
+                continue
+        project_raw = meta.get("projectPath") or ""
+        cwd = _decode_cwd(project_raw)
+        dir_name = _basename(project_raw)
+        out.append(
+            {
+                "id": sid or "",
+                "agent": r.get("agent", "?"),
+                "cost": round(r.get("totalCost", 0) or 0, 4),
+                "inputTokens": r.get("inputTokens", 0),
+                "outputTokens": r.get("outputTokens", 0),
+                "cacheReadTokens": r.get("cacheReadTokens", 0),
+                "cacheCreationTokens": r.get("cacheCreationTokens", 0),
+                "lastActivity": last_activity,
+                "cwd": cwd,          # absolute-ish path, empty if ccusage didn't provide it
+                "dirName": dir_name,  # last path segment; empty if ccusage didn't provide
+                "hasCwd": bool(project_raw),
+            }
+        )
+    out.sort(key=lambda s: s["cost"], reverse=True)
+    return {"total": len(out), "sessions": out}
+
+
+def _decode_cwd(raw: str) -> str:
+    """Best-effort decode of ccusage's projectPath into a readable path.
+
+    pi's projectPath is a Claude-Code-style encoded dir name where '/' became '-'.
+    Example: '--Users-caius-kong-Documents-...-AutoTrans--' -> /Users/caius_kong/.../AutoTrans
+    """
+    if not raw:
+        return ""
+    return raw.replace("-", "/")
+
+
+def _basename(raw: str) -> str:
+    """Last path segment of projectPath as a readable dir name.
+
+    Works even for encoded paths (the trailing segment is unaffected by the
+    dash encoding except when the real dir name itself contains '-'s).
+    """
+    if not raw:
+        return ""
+    cleaned = raw.strip("/-\\")
+    if not cleaned:
+        return ""
+    parts = cleaned.replace("-", "/").split("/")
+    last = parts[-1] if parts else cleaned
+    # If the real dir name itself got dash-encoded (e.g. 'my-proj' -> 'my_proj'),
+    # we can't perfectly recover it; fall back to a reasonable label.
+    return last or cleaned
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ccusage-ui/0.2"
 
@@ -243,6 +318,10 @@ class Handler(BaseHTTPRequestHandler):
             days = max(1, min(366, int(params.get("days", "30"))))
             self._json(trend(days))
             return
+        elif path == "/api/sessions":
+            days = max(1, min(366, int(params.get("days", "30"))))
+            self._json(sessions(days))
+            return
         else:
             self._send(404, b"not found", "text/plain")
             return
@@ -276,6 +355,7 @@ def main() -> None:
             threading.Thread(target=warm_one, args=(lambda: run_ccusage(["daily", "--last", "1", "--json", "--offline"], TTL["/api/today"]),)),
             threading.Thread(target=warm_one, args=(lambda: run_ccusage(["weekly", "--last", "1", "--json", "--offline"], TTL["/api/week"]),)),
             threading.Thread(target=warm_one, args=(lambda: run_ccusage(["monthly", "--last", "1", "--json", "--offline"], TTL["/api/month"]),)),
+            threading.Thread(target=warm_one, args=(lambda: run_ccusage(["session", "--by-agent", "--json", "--offline"], TTL["/api/sessions"]),)),
             threading.Thread(target=warm_one, args=(lambda: trend(30),)),
         ]
         for t in threads:

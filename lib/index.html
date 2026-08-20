@@ -53,6 +53,8 @@
   .range input{background:var(--panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:12px;font-family:inherit}
   .range button{background:var(--panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px}
   .range button:hover{border-color:var(--accent)}
+  .range button.active{background:var(--accent);border-color:var(--accent);color:#0d1117;font-weight:600}
+  .sessid{font-variant-numeric:tabular-nums;letter-spacing:.3px}
   .budget-band{margin:2px 0 14px;background:var(--panel-2);border-radius:8px;padding:12px 16px;display:flex;flex-direction:column;gap:8px}
   .budget-band .bl{display:flex;justify-content:space-between;font-size:13px;color:var(--muted)}
   .budget-band .bl b{color:var(--text)}
@@ -74,6 +76,7 @@
   <div class="tab" data-tab="week">This Week</div>
   <div class="tab" data-tab="month">This Month</div>
   <div class="tab" data-tab="range">Custom Range</div>
+  <div class="tab" data-tab="sessions">Sessions</div>
   <div class="tab-budget">
     <span class="budget-pill" id="budgetPill">budget …</span>
   </div>
@@ -104,12 +107,27 @@
 
 <div class="panel"><h2>Models <span class="tot" id="modelSum"></span></h2><div id="modelList"><div class="empty">loading…</div></div></div>
 
+<div class="panel" id="sessionsPanel" style="display:none">
+  <h2>Sessions <span class="tot" id="sessSum"></span>
+    <span class="pill" id="sessRange"></span>
+  </h2>
+  <div class="range" style="margin-bottom:12px">
+    <span class="pill">last</span>
+    <button data-sdays="7" class="sday">7d</button>
+    <button data-sdays="30" class="sday active">30d</button>
+    <button data-sdays="90" class="sday">90d</button>
+    <button data-sdays="365" class="sday">all</button>
+    <span class="pill" style="margin-left:auto" id="sessHint"></span>
+  </div>
+  <div id="sessionsList"><div class="empty">loading…</div></div>
+</div>
+
 <div class="hint">auto-refresh: today 15s · others 60s · costs in USD · <span id="lastUpd"></span></div>
 
 <script>
 const $=(id)=>document.getElementById(id);
-const tabs={today:{label:"Today",len:0},week:{label:"This Week",len:0},month:{label:"This Month",len:0},range:{label:"Custom Range",len:1}};
-let active="today", modelCtx=[];
+const tabs={today:{label:"Today",len:0},week:{label:"This Week",len:0},month:{label:"This Month",len:0},range:{label:"Custom Range",len:1},sessions:{label:"Sessions",len:0}};
+let active="today", modelCtx=[], sessDays=30;
 
 function fmtUsd(n){return "$"+(n==null?"–":Number(n).toFixed(2));}
 function fmtTok(n){
@@ -150,6 +168,32 @@ function applyBudget(month){
   if(pct>=100){cls="budget-danger";txt=`⚠ ${fmtUsd(spent)} ≥ budget`;}
   else if(pct>=80){cls="budget-warn";txt=`${fmtUsd(spent)} / ${fmtUsd(cap)} (${pct.toFixed(0)}%)`;}
   const p=$("budgetPill");p.className="budget-pill "+cls;p.textContent=txt;
+}
+
+async function loadSessions(){
+  $("sessionsList").innerHTML='<div class="empty">loading sessions…</div>';
+  const data=await(await fetch(`/api/sessions?days=${sessDays}`)).json();
+  if(data.error)throw new Error(data.error);
+  renderSessions(data);
+}
+
+function renderSessions(data){
+  const list=data.sessions||[];
+  const total=data.total||0;
+  const sum=list.reduce((a,s)=>a+(s.cost||0),0);
+  $("sessSum").textContent=fmtUsd(sum);
+  $("sessRange").textContent=`${total} sessions · last ${sessDays===365?"year":sessDays+"d"}`;
+  if(!list.length){$("sessionsList").innerHTML='<div class="empty">no sessions in range</div>';return;}
+  $("sessionsList").innerHTML=list.map(s=>{
+    const label = s.hasCwd
+      ? `<span class="name">${esc(s.dirName||s.cwd)} <span class="pill sessid">${esc(s.id.slice(0,8))}</span></span>`
+      : `<span class="name muted">${esc(s.id.slice(0,8))}</span>`;
+    const last=(s.lastActivity||"").slice(0,10);
+    return `<div class="row">
+      <div class="row-top"><span>${label} <span class="pill">${esc(s.agent)}</span></span><span class="cost">${fmtUsd(s.cost)}</span></div>
+      <div class="toks">${last?`<span>${esc(last)}</span>`:""}<span title="input">in ${fmtTok(s.inputTokens)}</span><span title="output">out ${fmtTok(s.outputTokens)}</span><span title="cache read">read ${fmtTok(s.cacheReadTokens)}</span><span title="cache write">write ${fmtTok(s.cacheCreationTokens)}</span></div>
+    </div>`;
+  }).join("");
 }
 
 function applyCards(data){
@@ -263,15 +307,26 @@ document.querySelectorAll(".tab").forEach(t=>{
     t.classList.add("active");
     active=t.dataset.tab;
     $("rangeRow").style.display = active==="range"?"block":"none";
+    $("sessionsPanel").style.display = active==="sessions"?"block":"none";
     if(active==="range"){
       if(!$("fromDate").value){const e=new Date();$("toDate").value=e.toISOString().slice(0,10);const s=new Date();s.setDate(s.getDate()-6);$("fromDate").value=s.toISOString().slice(0,10);}
       rangeApply();
+    }else if(active==="sessions"){
+      loadSessions();
     }else{
       loadModels();
     }
   });
 });
 $("rangeGo").addEventListener("click",rangeApply);
+document.querySelectorAll(".sday").forEach(b=>{
+  b.addEventListener("click",()=>{
+    document.querySelectorAll(".sday").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active");
+    sessDays=parseInt(b.dataset.sdays,10);
+    loadSessions();
+  });
+});
 
 tick();
 setInterval(tick,15000);
