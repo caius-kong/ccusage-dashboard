@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ccusage — Live Cost Dashboard</title>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --panel-2:#1c2330; --border:#2a3441;
+    --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950;
+    --red:#f85149; --yellow:#d29922;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;padding:24px;max-width:1120px;margin:0 auto}
+  header{display:flex;align-items:baseline;gap:14px;margin-bottom:16px;flex-wrap:wrap}
+  h1{font-size:20px;font-weight:650;letter-spacing:-.2px}
+  .sub{color:var(--muted);font-size:13px}
+  .status{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+  .dot.ok{background:var(--green);box-shadow:0 0 6px var(--green)}
+  .dot.err{background:var(--red);box-shadow:0 0 6px var(--red)}
+  .tabs{display:flex;gap:4px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+  .tab{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:7px 16px;cursor:pointer;color:var(--muted);font-size:13px}
+  .tab.active{background:var(--panel-2);border-color:var(--accent);color:var(--text);font-weight:600}
+  .tab:hover{color:var(--text)}
+  .tab-budget{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .budget-pill{border-radius:999px;padding:4px 12px;font-size:12px;font-weight:600;border:1px solid var(--border)}
+  .budget-ok{color:var(--green);border-color:var(--border)}
+  .budget-warn{color:var(--yellow);border-color:var(--yellow)}
+  .budget-danger{color:#fff;background:var(--red);border-color:var(--red)}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:22px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+  .card .label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.6px}
+  .card .value{font-size:26px;font-weight:650;margin-top:4px;font-variant-numeric:tabular-nums}
+  .card .value small{font-size:15px;color:var(--muted);font-weight:500}
+  .card .period{color:var(--muted);font-size:12px;margin-top:2px}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px}
+  .panel h2{font-size:15px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:baseline}
+  .panel h2 .tot{color:var(--accent);font-weight:650;font-variant-numeric:tabular-nums}
+  .row{padding:9px 2px;border-bottom:1px solid var(--border)}
+  .row:last-child{border-bottom:none}
+  .row-top{display:flex;justify-content:space-between;gap:12px;margin-bottom:5px}
+  .row .name{font-weight:550;word-break:break-all}
+  .row .cost{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .row .toks{color:var(--muted);font-size:12px;display:flex;gap:12px;flex-wrap:wrap}
+  .bar{height:5px;background:var(--panel-2);border-radius:3px;overflow:hidden;margin-top:6px}
+  .bar>div{height:100%;background:linear-gradient(90deg,var(--accent),#79c0ff);border-radius:3px}
+  .empty{color:var(--muted);padding:18px 0;text-align:center}
+  .err{color:var(--red)}
+  .pill{background:var(--panel-2);border:1px solid var(--border);border-radius:999px;padding:1px 8px;font-size:11px;color:var(--muted);margin-left:6px}
+  .hint{color:var(--muted);font-size:12px;margin-top:14px;text-align:center}
+  .range{display:flex;gap:8px;align-items:center;margin-left:6px}
+  .range input{background:var(--panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:12px;font-family:inherit}
+  .range button{background:var(--panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px}
+  .range button:hover{border-color:var(--accent)}
+  .budget-band{margin:2px 0 14px;background:var(--panel-2);border-radius:8px;padding:12px 16px;display:flex;flex-direction:column;gap:8px}
+  .budget-band .bl{display:flex;justify-content:space-between;font-size:13px;color:var(--muted)}
+  .budget-band .bl b{color:var(--text)}
+  .bgtrack{height:8px;background:#0a0e14;border-radius:5px;overflow:hidden}
+  .bgtrack>div{height:100%;border-radius:5px;transition:width .4s}
+  .bg-ok{background:var(--green)} .bg-warn{background:var(--yellow)} .bg-danger{background:var(--red)}
+  #trendChart{width:100%;height:220px}
+</style>
+</head>
+<body>
+<header>
+  <h1>ccusage · Live Cost</h1>
+  <span class="sub">by model, straight from ccusage</span>
+  <span class="status"><span class="dot" id="dot"></span><span id="status">connecting…</span></span>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-tab="today">Today</div>
+  <div class="tab" data-tab="week">This Week</div>
+  <div class="tab" data-tab="month">This Month</div>
+  <div class="tab" data-tab="range">Custom Range</div>
+  <div class="tab-budget">
+    <span class="budget-pill" id="budgetPill">budget …</span>
+  </div>
+</div>
+
+<div id="budgetBand" class="budget-band" style="display:none">
+  <div class="bl"><span>Monthly budget: <b id="bgCap"></b></span><span id="bgUsed"></span></div>
+  <div class="bgtrack"><div id="bgFill" style="width:0%"></div></div>
+</div>
+
+<div class="cards" id="cards">
+  <div class="card"><div class="label" id="c1label">Today</div><div class="value" id="c1">–</div><div class="period" id="c1p"></div></div>
+  <div class="card"><div class="label">Tokens</div><div class="value" id="c2">–</div></div>
+  <div class="card"><div class="label">Cache Read</div><div class="value" id="c3">–</div></div>
+  <div class="card"><div class="label">Cache Write</div><div class="value" id="c4">–</div></div>
+</div>
+
+<div id="rangeRow" class="panel" style="display:none">
+  <h2>Custom Range <span class="tot" id="rangeSum"></span></h2>
+  <div class="range">
+    <input type="date" id="fromDate"> <span>→</span> <input type="date" id="toDate">
+    <button id="rangeGo">Apply</button>
+    <span class="pill" id="rangeDays"></span>
+  </div>
+</div>
+
+<div class="panel"><h2>30-Day Trend <span class="tot" id="trendSum"></span></h2><canvas id="trendChart"></canvas></div>
+
+<div class="panel"><h2>Models <span class="tot" id="modelSum"></span></h2><div id="modelList"><div class="empty">loading…</div></div></div>
+
+<div class="hint">auto-refresh: today 15s · others 60s · costs in USD · <span id="lastUpd"></span></div>
+
+<script>
+const $=(id)=>document.getElementById(id);
+const tabs={today:{label:"Today",len:0},week:{label:"This Week",len:0},month:{label:"This Month",len:0},range:{label:"Custom Range",len:1}};
+let active="today", modelCtx=[];
+
+function fmtUsd(n){return "$"+(n==null?"–":Number(n).toFixed(2));}
+function fmtTok(n){
+  if(n==null)return "–";
+  if(n>=1e6)return (n/1e6).toFixed(2)+"M";
+  if(n>=1e3)return (n/1e3).toFixed(1)+"k";
+  return String(n);
+}
+function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+
+function renderModels(data){
+  const total=data.totalCost||0;
+  const models=data.models||[];
+  if(!models.length){$("modelList").innerHTML='<div class="empty">no usage recorded</div>';modelCtx=[];return;}
+  modelCtx=models;
+  $("modelList").innerHTML=models.map(m=>{
+    const pct=total>0?(m.cost/total)*100:0;
+    const m2=m.name.match(/^\[(.+?)\]\s*(.*)$/);
+    const badge=m2?`<span class="pill">${esc(m2[1])}</span>`:"";
+    const mn=m2?esc(m2[2]||m2[1]):esc(m.name);
+    return `<div class="row"><div class="row-top"><span class="name">${mn}${badge ? " " + badge : ""}</span><span class="cost">${fmtUsd(m.cost)} · ${pct.toFixed(1)}%</span></div>
+      <div class="toks"><span title="input">in ${fmtTok(m.inputTokens)}</span><span title="output">out ${fmtTok(m.outputTokens)}</span><span title="cache read">read ${fmtTok(m.cacheReadTokens)}</span><span title="cache write">write ${fmtTok(m.cacheCreationTokens)}</span></div>
+      <div class="bar"><div style="width:${Math.max(pct,1.2)}%"></div></div></div>`;
+  }).join("");
+}
+
+function applyBudget(month){
+  const cap=month.budget;
+  if(!cap){$("budgetBand").style.display="none";$("budgetPill").textContent="budget: —";return;}
+  const spent=month.totalCost||0, pct=month.budgetUsedPct||0;
+  $("bgCap").textContent=fmtUsd(cap);
+  $("bgUsed").textContent=`${fmtUsd(spent)} spent · ${pct.toFixed(1)}% of budget`;
+  const fill=$("bgFill");
+  fill.style.width=Math.min(pct,100)+"%";
+  fill.className = pct>=100?"bg-danger":(pct>=80?"bg-warn":"bg-ok");
+  $("budgetBand").style.display="flex";
+  let cls="budget-ok",txt=`budget ${fmtUsd(cap)} · ${pct.toFixed(0)}%`;
+  if(pct>=100){cls="budget-danger";txt=`⚠ ${fmtUsd(spent)} ≥ budget`;}
+  else if(pct>=80){cls="budget-warn";txt=`${fmtUsd(spent)} / ${fmtUsd(cap)} (${pct.toFixed(0)}%)`;}
+  const p=$("budgetPill");p.className="budget-pill "+cls;p.textContent=txt;
+}
+
+function applyCards(data){
+  const total=data.totalCost||0;
+  $("c1").innerHTML=fmtUsd(total)+(total?"<small> USD</small>":"");
+  $("c1p").textContent=data.period||"";
+  const tt=(data.inputTokens||0)+(data.outputTokens||0)+(data.cacheReadTokens||0)+(data.cacheCreationTokens||0);
+  $("c2").textContent=fmtTok(tt);
+  $("c3").textContent=fmtTok(data.cacheReadTokens);
+  $("c4").textContent=fmtTok(data.cacheCreationTokens);
+  $("c1label").textContent=tabs[active].label;
+  $("modelSum").textContent=fmtUsd(total);
+}
+function applyCardsRange(data){
+  const p=$("rangeSum");
+  p.textContent=fmtUsd(data.totalCost||0);
+  $("rangeDays").textContent=data.dayCount?`${data.dayCount} days`:"";
+  applyCards(data);
+  renderModels(data);
+}
+
+async function loadModels(){
+  let ep,data;
+  if(active==="today"){ep="/api/today";data=await (await fetch(ep)).json();}
+  else if(active==="week"){data=await (await fetch("/api/week")).json();}
+  else if(active==="month"){data=await (await fetch("/api/month")).json();applyBudget(data);}
+  else{return;} // handled by rangeApply
+  if(data.error)throw new Error(data.error);
+  applyCards(data);
+  renderModels(data);
+}
+
+async function rangeApply(){
+  const f=$("fromDate").value,t=$("toDate").value;
+  if(!f||!t){return;}
+  $("modelList").innerHTML='<div class="empty">loading range…</div>';
+  const data=await(await fetch(`/api/range?from=${f}&to=${t}`)).json();
+  if(data.error)throw new Error(data.error);
+  applyCardsRange(data);
+}
+
+async function loadTrend(){
+  const d=await(await fetch("/api/trend?days=30")).json();
+  if(d.error){return;}
+  drawTrend(d.days||[]);
+  $("trendSum").textContent=fmtUsd((d.days||[]).reduce((a,x)=>a+(x.totalCost||0),0));
+}
+
+function drawTrend(days){
+  const cv=$("trendChart"),ctx=cv.getContext("2d");
+  const W=(cv.width=cv.offsetWidth)||900,H=(cv.height=220);
+  ctx.clearRect(0,0,W,H);
+  if(!days.length){ctx.fillStyle="#8b949e";ctx.fillText("no data",10,20);return;}
+  const max=Math.max(...days.map(x=>x.totalCost),0.0001);
+  const padL=54,padB=24,padT=12;
+  const iw=W-padL-10,ih=H-padB-padT;
+  const step=iw/days.length;
+  const bw=Math.max(2,step*0.6);
+  // grid + y labels
+  ctx.font="11px -apple-system,sans-serif";
+  for(let i=0;i<=4;i++){const y=padT+ih-(ih*(i/4));ctx.strokeStyle="#21262d";ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(W-10,y);ctx.stroke();ctx.fillStyle="#8b949e";ctx.textAlign="right";ctx.fillText(fmtUsd(max*(i/4)),padL-6,y+4);}
+  // bars
+  days.forEach((d,i)=>{
+    const h=Math.max(1,(d.totalCost/max)*ih);
+    const x=padL+step*i+(step-bw)/2;
+    const y=padT+ih-h;
+    ctx.fillStyle=d.totalCost>0?"#58a6ff":"#21262d";
+    ctx.beginPath();ctx.roundRect?ctx.roundRect(x,y,bw,h,3):ctx.rect(x,y,bw,h);ctx.fill();
+    // weekend dot
+    const dt=new Date(d.period+"T00:00:00");
+    const day=dt.getDay();
+    if(day===0||day===6){ctx.fillStyle="rgba(210,153,34,.85)";ctx.beginPath();ctx.arc(x+bw/2,padT+ih+5,2.5,0,7);ctx.fill();}
+  });
+  // x labels (every ~5th)
+  ctx.fillStyle="#8b949e";ctx.textAlign="center";
+  const every=Math.max(1,Math.floor(days.length/10));
+  days.forEach((d,i)=>{
+    if(i%every!==0&&i!==days.length-1)return;
+    const x=padL+step*i+step/2;
+    ctx.fillText(d.period.slice(5),x,H-6);
+  });
+  // tooltip via hover (simple)
+  cv.onmousemove=(e)=>{
+    const r=cv.getBoundingClientRect();const mx=e.clientX-r.left;
+    const idx=Math.min(days.length-1,Math.max(0,Math.floor((mx-padL)/step)));
+    const d=days[idx];if(!d)return;
+    ctx.clearRect(0,0,W,H);drawTrend(days);
+    ctx.fillStyle="rgba(22,27,34,.95)";const tx=Math.min(mx+10,W-120),ty=12;
+    ctx.beginPath();ctx.roundRect?ctx.roundRect(tx,ty,110,28,6):ctx.rect(tx,ty,110,28);ctx.fill();
+    ctx.fillStyle="#e6edf3";ctx.font="12px -apple-system,sans-serif";ctx.textAlign="left";
+    ctx.fillText(`${d.period}: ${fmtUsd(d.totalCost)}`,tx+8,ty+19);
+  };
+}
+
+async function tick(){
+  const dot=$("dot"),st=$("status");
+  try{
+    const month=await(await fetch("/api/month")).json();
+    if(month.error)throw new Error(month.error);
+    applyBudget(month);
+    await loadModels();
+    await loadTrend();
+    dot.className="dot ok";st.textContent="live";
+    $("lastUpd").textContent="last updated "+new Date().toLocaleTimeString();
+  }catch(e){dot.className="dot err";st.textContent="error: "+e.message;}
+}
+
+document.querySelectorAll(".tab").forEach(t=>{
+  t.addEventListener("click",()=>{
+    document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+    t.classList.add("active");
+    active=t.dataset.tab;
+    $("rangeRow").style.display = active==="range"?"block":"none";
+    if(active==="range"){
+      if(!$("fromDate").value){const e=new Date();$("toDate").value=e.toISOString().slice(0,10);const s=new Date();s.setDate(s.getDate()-6);$("fromDate").value=s.toISOString().slice(0,10);}
+      rangeApply();
+    }else{
+      loadModels();
+    }
+  });
+});
+$("rangeGo").addEventListener("click",rangeApply);
+
+tick();
+setInterval(tick,15000);
+window.addEventListener("resize",()=>{if($("trendChart").width)loadTrend();});
+</script>
+</body>
+</html>

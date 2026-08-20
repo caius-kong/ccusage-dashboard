@@ -1,0 +1,41 @@
+{
+  "name": "@caius_kong/ccusage-dashboard",
+  "version": "0.1.0",
+  "description": "One-command local dashboard for ccusage: today/week/month/custom cost by model, 30-day trend, monthly budget alert. Numbers straight from ccusage.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "ccusage-dashboard": "bin/ccusage-ui.js"
+  },
+  "files": [
+    "bin/",
+    "lib/"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "keywords": [
+    "ccusage",
+    "claude-code",
+    "codex",
+    "cost",
+    "usage",
+    "dashboard",
+    "llm-cost",
+    "token-usage"
+  ],
+  "scripts": {
+    "start": "node bin/ccusage-ui.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/caius-kong/ccusage-dashboard"
+  },
+  "author": "Caius Kong",
+  "dependencies": {
+    "ccusage": "^20.0.20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

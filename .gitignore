@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# npm
+node_modules/
+*.tgz
+
+# env / secrets
+.env
+.npmrc
+
+# OS
+.DS_Store
