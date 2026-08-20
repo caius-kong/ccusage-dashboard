@@ -1,0 +1,49 @@
+name: Publish to npm
+
+# Two ways to release a new version:
+#   1. MANUAL (recommended): Actions tab → "Publish to npm" → Run workflow,
+#      fill in the new "Version" (e.g. 1.2.3). Bumps package.json, tags v1.2.3,
+#      and publishes — no local commands needed.
+#   2. TAG: push a tag like `v0.1.2` (works when package.json is already bumped).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New version to publish (semver, no "v" prefix)'
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # to push the version-bump commit + tag
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org/
+
+      # Manual dispatch: bump version, commit, and tag to keep repo in sync.
+      - name: Bump version (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          npm version "${{ inputs.version }}" -m "chore: release v%s"
+          git push --follow-tags origin main
+
+      - name: Install deps
+        run: npm install --package-lock-only --ignore-scripts
+
+      - name: Publish to npm
+        run: npm publish --access=public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
