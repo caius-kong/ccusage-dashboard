@@ -218,8 +218,19 @@ def sessions(since_days: int = 30) -> dict:
             if act_date is not None and act_date < cutoff:
                 continue
         project_raw = meta.get("projectPath") or ""
-        cwd = _decode_cwd(project_raw)
         dir_name = _basename(project_raw)
+        cwd = _decode_cwd(project_raw)
+        # For pi sessions the authoritative workdir lives on disk (session file first-line
+        # "cwd"). Your dashboards want the REAL dir name (e.g. "fund-tracker", not the
+        # lossy basename "tracker"). This only affects the DISPLAY label — all numeric
+        # cost/token data still comes 100% from ccusage.
+        if project_raw and dir_name:
+            disk_cwd = _pi_cwd_from_disk(project_raw)
+            if disk_cwd:
+                cwd = disk_cwd
+                disk_base = disk_cwd.rstrip("/").split("/")[-1]
+                if disk_base:
+                    dir_name = disk_base
         out.append(
             {
                 "id": sid or "",
@@ -230,14 +241,55 @@ def sessions(since_days: int = 30) -> dict:
                 "cacheReadTokens": r.get("cacheReadTokens", 0),
                 "cacheCreationTokens": r.get("cacheCreationTokens", 0),
                 "lastActivity": last_activity,
-                "cwd": cwd,            # best-effort decoded path, empty if ccusage didn't provide it
-                "dirName": dir_name,  # last path segment; empty if ccusage didn't provide
-                "projectKey": project_raw,  # raw ccusage projectPath (authoritative, may be encoded)
+                "cwd": cwd,            # real workdir when known (pi), else best-effort decode
+                "dirName": dir_name,  # real dir name when known (pi), else last path segment
+                "projectKey": project_raw,  # raw ccusage projectPath
                 "hasCwd": bool(project_raw),
             }
         )
     out.sort(key=lambda s: s["cost"], reverse=True)
     return {"total": len(out), "sessions": out}
+
+
+def _pi_cwd_from_disk(project_key: str):
+    """Best-effort real workdir for a pi session project.
+
+    pi stores sessions under ~/.pi/agent/sessions/<projectKey>/<ts>_<id>.jsonl,
+    whose first line carries an authoritative "cwd". Reading it lets the dashboard
+    show the REAL dir name (e.g. "fund-tracker") instead of the lossy basename that
+    the encoded projectPath produces ("tracker").
+
+    This only supplies the DISPLAY label — costs/tokens still come from ccusage.
+    Returns None (caller falls back) if the dir/file is missing or unreadable.
+    """
+    import glob
+
+    try:
+        root = Path.home() / ".pi" / "agent" / "sessions" / project_key
+        if not root.is_dir():
+            return None
+        candidates = sorted(glob.glob(str(root / "*.jsonl")))
+        if not candidates:
+            return None
+        for path in candidates:
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except Exception:
+                            continue
+                        cwd = rec.get("cwd")
+                        if isinstance(cwd, str) and cwd.strip():
+                            return cwd.strip().rstrip("/")
+            except (OSError, ValueError):
+                continue
+    except Exception:
+        return None
+    return None
 
 
 def _decode_cwd(raw: str) -> str:
