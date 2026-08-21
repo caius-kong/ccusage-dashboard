@@ -542,13 +542,13 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--budget", type=float, default=None, help="monthly budget cap in USD (default 300)")
     parser.add_argument("--ccusage-path", default=None, help="explicit path to a ccusage binary or src/cli.js")
-    parser.add_argument("--no-warm", action="store_true", help="skip blocking warm-up (first requests may be slow)")
+    parser.add_argument("--no-warm", action="store_true", help="skip background warm-up (first requests may be slow)")
     parser.add_argument("--open", action="store_true", help="open browser after start")
     args = parser.parse_args()
 
     BUDGET = args.budget if args.budget is not None else float(os_env_budget() or 300.0)
     _CCUSAGE_PATH_OVERRIDE = args.ccusage_path
-    print(f"using ccusage → {' '.join(resolve_ccusage())}")
+    print(f"using ccusage → {' '.join(resolve_ccusage())}", flush=True)
 
     def warm_one(fn):
         fn()
@@ -566,22 +566,47 @@ def main() -> None:
         for t in threads:
             t.join()
 
+    # warm the caches in the background so the server is reachable immediately;
+    # the first page load will wait for warm-up to finish via the TTL cache lock.
     if not args.no_warm:
-        print("warming ccusage caches (first load will be instant after this)…", flush=True)
-        warm()
-        print("warm-up complete.")
+        print("warming ccusage caches in background…", flush=True)
+        threading.Thread(target=warm, daemon=True).start()
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"ccusage-ui → http://{args.host}:{args.port}  (monthly budget ${BUDGET:g}, Ctrl+C to stop)")
+    url = f"http://{args.host}:{args.port}"
+    print(f"ccusage-ui → {url}  (monthly budget ${BUDGET:g}, Ctrl+C to stop)", flush=True)
     if args.open:
-        import webbrowser
-
-        webbrowser.open(f"http://{args.host}:{args.port}")
+        _open_browser(url)
 
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nbye")
+        print("\nbye", flush=True)
+
+
+def _open_browser(url: str) -> None:
+    """Open the dashboard in the default browser. Prefers the OS-native opener
+    (open / xdg-open / start) and logs success/failure so it is verifiable.
+    """
+    import subprocess
+    import sys
+
+    if sys.platform == "darwin":
+        cmd = ["open", url]
+    elif sys.platform.startswith("win"):
+        cmd = ["cmd", "/c", "start", "", url]
+    else:
+        cmd = ["xdg-open", url]
+    try:
+        r = subprocess.run(cmd, timeout=5, capture_output=True, text=True)
+        if r.returncode == 0:
+            print(f"browser opened → {url}", flush=True)
+        else:
+            print(f"browser open failed (rc={r.returncode}): {r.stderr.strip()[:200]}", flush=True)
+    except FileNotFoundError:
+        print(f"no system opener found; open {url} manually", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"browser open error: {e}", flush=True)
 
 
 def os_env_budget() -> str:
