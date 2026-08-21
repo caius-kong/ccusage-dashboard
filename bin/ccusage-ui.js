@@ -5,12 +5,18 @@
  * Locates the bundled server.py (and its index.html sibling) and runs it with
  * the local python3, forwarding any CLI args. The server itself shells out to
  * ccusage for all numbers, so the dashboard always matches ccusage.
+ *
+ * Startup UX:
+ *   - the server tries to auto-open the default browser (best effort)
+ *   - regardless of that, this launcher prints a clear URL banner once the
+ *     server is up, so the user can always click/copy it manually.
  */
 'use strict';
 
 const { spawn, spawnSync } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
+const http = require('node:http');
 
 // Data files live in package/lib (installed layout) or the repo root (dev layout).
 function resolveLibFile(name) {
@@ -41,12 +47,49 @@ if (!py) {
   process.exit(1);
 }
 
-const args = process.argv.slice(2);
+// Parse the user's --port / --host so the banner points at the real URL.
+const rawArgs = process.argv.slice(2);
+function argValue(name, fallback) {
+  const i = rawArgs.indexOf(name);
+  return i >= 0 && rawArgs[i + 1] ? rawArgs[i + 1] : fallback;
+}
+const host = argValue('--host', '127.0.0.1');
+const port = parseInt(argValue('--port', '8799'), 10);
+const url = `http://${host}:${port}`;
+
+const args = rawArgs.slice();
 if (!args.includes('--open') && !process.env.CCUSAGE_UI_NO_OPEN) {
-  args.push('--open'); // default: open browser after start
+  args.push('--open'); // default: try to auto-open the browser (best effort)
 }
 
 const child = spawn(py, [serverPy, ...args], { stdio: 'inherit', env: { ...process.env } });
+
+// Once the server answers /, print a clear URL banner for manual opening.
+let bannerPrinted = false;
+function printBanner() {
+  if (bannerPrinted) return;
+  bannerPrinted = true;
+  const line = '─'.repeat(Math.max(20, url.length + 6));
+  console.log('');
+  console.log(line);
+  console.log(`  Dashboard is running →  ${url}`);
+  console.log(`  Open it manually:      ${url}`);
+  console.log(line);
+  console.log('');
+}
+
+let checked = false;
+function pingAndBanner() {
+  if (checked) return;
+  checked = true;
+  const req = http.get(url + '/api/health', { timeout: 1500 }, (res) => {
+    if (res.statusCode === 200) printBanner();
+    else setTimeout(pingAndBanner, 500);
+  });
+  req.on('error', () => setTimeout(pingAndBanner, 500));
+}
+
+setTimeout(pingAndBanner, 800); // give the python server a beat to bind
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => { if (!child.killed) child.kill(sig); });

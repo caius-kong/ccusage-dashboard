@@ -577,6 +577,8 @@ def main() -> None:
     print(f"ccusage-ui → {url}  (monthly budget ${BUDGET:g}, Ctrl+C to stop)", flush=True)
     if args.open:
         _open_browser(url)
+    else:
+        print(f"dashboard ready at {url} — open it in your browser", flush=True)
 
     try:
         httpd.serve_forever()
@@ -585,28 +587,43 @@ def main() -> None:
 
 
 def _open_browser(url: str) -> None:
-    """Open the dashboard in the default browser. Prefers the OS-native opener
-    (open / xdg-open / start) and logs success/failure so it is verifiable.
+    """Open the dashboard in a browser. Tries, in order:
+      1. $BROWSER (e.g. 'Google Chrome', 'Safari', 'firefox')
+      2. the OS default opener (open / xdg-open / start)
+      3. prints the URL as a fallback so the user can open it manually.
+    Every attempt logs its outcome so auto-open is verifiable.
     """
+    import os
     import subprocess
     import sys
 
+    browser = os.environ.get("BROWSER", "").strip()
+    attempts = []
     if sys.platform == "darwin":
-        cmd = ["open", url]
+        if browser:
+            attempts.append(["open", "-a", browser, url])
+        attempts.append(["open", url])
     elif sys.platform.startswith("win"):
-        cmd = ["cmd", "/c", "start", "", url]
+        if browser:
+            attempts.append(["cmd", "/c", "start", "", "chrome", url])
+        attempts.append(["cmd", "/c", "start", "", url])
     else:
-        cmd = ["xdg-open", url]
-    try:
-        r = subprocess.run(cmd, timeout=5, capture_output=True, text=True)
-        if r.returncode == 0:
-            print(f"browser opened → {url}", flush=True)
-        else:
-            print(f"browser open failed (rc={r.returncode}): {r.stderr.strip()[:200]}", flush=True)
-    except FileNotFoundError:
-        print(f"no system opener found; open {url} manually", flush=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"browser open error: {e}", flush=True)
+        if browser:
+            attempts.append([browser, url])
+        attempts.append(["xdg-open", url])
+
+    for cmd in attempts:
+        try:
+            r = subprocess.run(cmd, timeout=5, capture_output=True, text=True)
+            if r.returncode == 0:
+                print(f"browser opened → {url} ({' '.join(cmd[:2])})", flush=True)
+                return
+            print(f"browser attempt failed (rc={r.returncode}): {' '.join(cmd[:2])}", flush=True)
+        except FileNotFoundError:
+            print(f"opener not found: {' '.join(cmd[:2])}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"browser open error: {e}", flush=True)
+    print(f"could not auto-open a browser — open it manually: {url}", flush=True)
 
 
 def os_env_budget() -> str:
