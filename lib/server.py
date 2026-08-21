@@ -194,10 +194,14 @@ def trend(days: int = 30) -> dict:
     return {"start": start.isoformat(), "end": end.isoformat(), "days": out}
 
 
-def sessions(since_days: int = 30) -> dict:
+def sessions(since_days: int = 30, period: str = "", from_date: str = "", to_date: str = "") -> dict:
     """Return ccusage's session report, each with its real workdir (dirName) when
     the agent's local session store records one. Every numeric cost/token field
     comes 100% from ccusage; the workdir is only a display label.
+
+    Filtering: pass `period` in ("today" | "week" | "month") OR an explicit
+    date range via `from_date`/`to_date` (YYYY-MM-DD). `since_days` is kept for
+    backward compatibility with the old 7d/30d/90d/all selector.
     """
     data = run_ccusage(
         ["session", "--by-agent", "--json", "--offline"],
@@ -205,26 +209,44 @@ def sessions(since_days: int = 30) -> dict:
     )
     rows = data.get("session") or []
 
-    cutoff = date.today() - timedelta(days=since_days)
+    # ---- choose the cutoff window ----------------
+    today = date.today()
+    lo = hi = None
+    if from_date and to_date:
+        try:
+            lo = date.fromisoformat(from_date)
+            hi = date.fromisoformat(to_date)
+        except ValueError:
+            lo = hi = None
+    elif period == "today":
+        lo = hi = today
+    elif period == "week":
+        lo = today - timedelta(days=6)
+        hi = today
+    elif period == "month":
+        lo = today.replace(day=1)
+        hi = today
+    elif period == "custom":
+        pass  # fall through to since_days below (legacy)
+    if lo is None:
+        lo = today - timedelta(days=since_days)
+        hi = today
+
     out = []
     for r in rows:
         meta = r.get("metadata") or {}
-        sid = r.get("period")  # session id in ccusage's session report
+        sid = r.get("period")
         last_activity = meta.get("lastActivity") or ""
-        # date filter by last activity
+        # date filter by last activity against [lo, hi]
         if last_activity:
             try:
                 act_date = date.fromisoformat(last_activity[:10])
             except ValueError:
                 act_date = None
-            if act_date is not None and act_date < cutoff:
-                continue
+            if act_date is not None:
+                if act_date < lo or act_date > hi:
+                    continue
         project_raw = meta.get("projectPath") or ""
-        # Resolve the authoritative workdir (dir name) for every agent that stores one
-        # locally. ccusage's projectPath only covers pi and is lossy for hyphenated names
-        # ("fund-tracker" -> "tracker"). Each agent keeps its own session store whose
-        # files carry the real cwd, so we read those. This ONLY affects the display label
-        # (dirName/cwd) — every numeric cost/token field still comes 100% from ccusage.
         agent_name = r.get("agent", "?")
         cwd = ""
         dir_name = ""
@@ -236,7 +258,6 @@ def sessions(since_days: int = 30) -> dict:
                 if cwd_base:
                     dir_name = cwd_base
         if not cwd:
-            # fall back to a best-effort decode of ccusage's projectPath (pi only)
             cwd = _decode_cwd(project_raw)
             dir_name = _basename(project_raw)
         out.append(
@@ -249,14 +270,15 @@ def sessions(since_days: int = 30) -> dict:
                 "cacheReadTokens": r.get("cacheReadTokens", 0),
                 "cacheCreationTokens": r.get("cacheCreationTokens", 0),
                 "lastActivity": last_activity,
-                "cwd": cwd,            # real workdir when resolved, else best-effort decode
-                "dirName": dir_name,  # real dir name when resolved, else last path segment
-                "projectKey": project_raw,  # raw ccusage projectPath
+                "cwd": cwd,
+                "dirName": dir_name,
+                "projectKey": project_raw,
                 "hasCwd": bool(cwd),
             }
         )
     out.sort(key=lambda s: s["cost"], reverse=True)
-    return {"total": len(out), "sessions": out}
+    total_cost = round(sum(s["cost"] for s in out), 4)
+    return {"total": len(out), "totalCost": total_cost, "sessions": out}
 
 
 def _pi_cwd_from_disk(project_key: str):
@@ -498,8 +520,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(trend(days))
             return
         elif path == "/api/sessions":
+            period = params.get("period", "")
+            frm, to = params.get("from", ""), params.get("to", "")
             days = max(1, min(366, int(params.get("days", "30"))))
-            self._json(sessions(days))
+            self._json(sessions(days, period, frm, to))
             return
         else:
             self._send(404, b"not found", "text/plain")

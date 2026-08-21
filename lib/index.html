@@ -77,7 +77,6 @@
   <div class="tab" role="tab" tabindex="0" aria-selected="false" data-tab="week">This Week</div>
   <div class="tab" role="tab" tabindex="0" aria-selected="false" data-tab="month">This Month</div>
   <div class="tab" role="tab" tabindex="0" aria-selected="false" data-tab="range">Custom Range</div>
-  <div class="tab" role="tab" tabindex="0" aria-selected="false" data-tab="sessions">Sessions</div>
   <div class="tab-budget">
     <span class="budget-pill" id="budgetPill">budget …</span>
   </div>
@@ -93,6 +92,7 @@
   <div class="card"><div class="label">Tokens</div><div class="value" id="c2">–</div></div>
   <div class="card"><div class="label">Cache Read</div><div class="value" id="c3">–</div></div>
   <div class="card"><div class="label">Cache Write</div><div class="value" id="c4">–</div></div>
+  <div class="card"><div class="label">Cache Hit Rate</div><div class="value" id="c5">–</div><div class="period" id="c5p"></div></div>
 </div>
 
 <div id="rangeRow" class="panel" style="display:none">
@@ -108,18 +108,10 @@
 
 <div class="panel"><h2>Models <span class="tot" id="modelSum"></span></h2><div id="modelList"><div class="empty">loading…</div></div></div>
 
-<div class="panel" id="sessionsPanel" style="display:none">
+<div class="panel" id="sessionsPanel">
   <h2>Sessions <span class="tot" id="sessSum"></span>
     <span class="pill" id="sessRange"></span>
   </h2>
-  <div class="range" style="margin-bottom:12px">
-    <span class="pill">last</span>
-    <button data-sdays="7" class="sday">7d</button>
-    <button data-sdays="30" class="sday active">30d</button>
-    <button data-sdays="90" class="sday">90d</button>
-    <button data-sdays="365" class="sday">all</button>
-    <span class="pill" style="margin-left:auto" id="sessHint"></span>
-  </div>
   <div id="sessionsList"><div class="empty">loading…</div></div>
 </div>
 
@@ -127,8 +119,8 @@
 
 <script>
 const $=(id)=>document.getElementById(id);
-const tabs={today:{label:"Today",len:0},week:{label:"This Week",len:0},month:{label:"This Month",len:0},range:{label:"Custom Range",len:1},sessions:{label:"Sessions",len:0}};
-let active="today", modelCtx=[], sessDays=30;
+const tabs={today:{label:"Today",len:0},week:{label:"This Week",len:0},month:{label:"This Month",len:0},range:{label:"Custom Range",len:1}};
+let active="today", modelCtx=[];
 
 function fmtUsd(n){return "$"+(n==null?"–":Number(n).toFixed(2));}
 function fmtTok(n){
@@ -138,6 +130,7 @@ function fmtTok(n){
   if(n>=1e3)return (n/1e3).toFixed(1)+"k";
   return String(n);
 }
+function fmtPct(n){return n==null?"–":n.toFixed(1)+"%";}
 function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML;}
 
 function renderModels(data){
@@ -173,8 +166,17 @@ function applyBudget(month){
 }
 
 async function loadSessions(){
-  $("sessionsList").innerHTML='<div class="empty">loading sessions…</div>';
-  const data=await(await fetch(`/api/sessions?days=${sessDays}`)).json();
+  // follow the top-level time filter (today/week/month/custom range)
+  let q="";
+  if(active==="today")q="period=today";
+  else if(active==="week")q="period=week";
+  else if(active==="month")q="period=month";
+  else if(active==="range"){
+    const f=$("fromDate").value,t=$("toDate").value;
+    if(!f||!t){return;}
+    q=`from=${f}&to=${t}`;
+  }else{return;}
+  const data=await(await fetch(`/api/sessions?${q}`)).json();
   if(data.error)throw new Error(data.error);
   renderSessions(data);
 }
@@ -182,9 +184,9 @@ async function loadSessions(){
 function renderSessions(data){
   const list=data.sessions||[];
   const total=data.total||0;
-  const sum=list.reduce((a,s)=>a+(s.cost||0),0);
+  const sum=data.totalCost!=null?data.totalCost:list.reduce((a,s)=>a+(s.cost||0),0);
   $("sessSum").textContent=fmtUsd(sum);
-  $("sessRange").textContent=`${total} sessions · last ${sessDays===365?"year":sessDays+"d"}`;
+  $("sessRange").textContent=`${total} sessions`;
   if(!list.length){$("sessionsList").innerHTML='<div class="empty">no sessions in range</div>';return;}
   $("sessionsList").innerHTML=list.map(s=>{
     const label = s.hasCwd
@@ -206,6 +208,11 @@ function applyCards(data){
   $("c2").textContent=fmtTok(tt);
   $("c3").textContent=fmtTok(data.cacheReadTokens);
   $("c4").textContent=fmtTok(data.cacheCreationTokens);
+  // cache hit rate = cache-read input / (cache-read input + non-cached input)
+  const hitIn=data.cacheReadTokens||0, plainIn=data.inputTokens||0;
+  const hitRate = (hitIn+plainIn)>0 ? (hitIn/(hitIn+plainIn))*100 : null;
+  $("c5").innerHTML=fmtPct(hitRate)+(hitRate!=null?"<small> cache</small>":"");
+  $("c5p").textContent=hitRate!=null?`${fmtTok(plainIn)} miss · ${fmtTok(hitIn)} hit`:"";
   $("c1label").textContent=tabs[active].label;
   $("modelSum").textContent=fmtUsd(total);
 }
@@ -298,6 +305,7 @@ async function tick(){
     applyBudget(month);
     await loadModels();
     await loadTrend();
+    await loadSessions();
     dot.className="dot ok";st.textContent="live";
     $("lastUpd").textContent="last updated "+new Date().toLocaleTimeString();
   }catch(e){dot.className="dot err";st.textContent="error: "+e.message;}
@@ -310,28 +318,18 @@ document.querySelectorAll(".tab").forEach(t=>{
     t.setAttribute("aria-selected","true");
     active=t.dataset.tab;
     $("rangeRow").style.display = active==="range"?"block":"none";
-    $("sessionsPanel").style.display = active==="sessions"?"block":"none";
     if(active==="range"){
       if(!$("fromDate").value){const e=new Date();$("toDate").value=e.toISOString().slice(0,10);const s=new Date();s.setDate(s.getDate()-6);$("fromDate").value=s.toISOString().slice(0,10);}
       rangeApply();
-    }else if(active==="sessions"){
-      loadSessions();
     }else{
       loadModels();
     }
+    loadSessions();
   };
   t.addEventListener("click",activate);
   t.addEventListener("keydown",(e)=>{if(e.key==="Enter"||e.key===" "||e.key==="Spacebar"){e.preventDefault();activate();}});
 });
 $("rangeGo").addEventListener("click",rangeApply);
-document.querySelectorAll(".sday").forEach(b=>{
-  b.addEventListener("click",()=>{
-    document.querySelectorAll(".sday").forEach(x=>x.classList.remove("active"));
-    b.classList.add("active");
-    sessDays=parseInt(b.dataset.sdays,10);
-    loadSessions();
-  });
-});
 
 tick();
 setInterval(tick,15000);
