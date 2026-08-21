@@ -1,6 +1,6 @@
 {
   "name": "@caius_kong/ccusage-dashboard",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "One-command local dashboard for ccusage: today/week/month/custom cost by model, 30-day trend, monthly budget alert. Numbers straight from ccusage.",
   "license": "MIT",
   "type": "commonjs",
