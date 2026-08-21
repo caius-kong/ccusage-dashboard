@@ -85,3 +85,17 @@ node bin/ccusage-ui.js                # same as the npx experience
 ## License
 
 MIT © Caius Kong
+
+## Releasing a new version
+
+Releases are done entirely from the GitHub Actions tab (no local commands, full audit log):
+
+1. Push your code changes to `main` as usual.
+2. Go to **Actions → Publish to npm → Run workflow**.
+3. Leave **Version** empty to auto-bump a patch, or type a semver (e.g. `1.2.3`).
+4. The workflow bumps `package.json`, tags `v*`, pushes back to `main`, and publishes to npm.
+
+You can also trigger it with the CLI:
+```bash
+gh workflow run "Publish to npm"   # bumps patch
+```
