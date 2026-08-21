@@ -12,7 +12,7 @@ Because all numbers come from ccusage itself, the figures always match what
 to maintain, no third-party packages — only the Python standard library.
 
 Usage:
-    python3 server.py [--port 8799] [--budget 300] [--open]
+    python3 server.py [--port 8799] [--budget 300]
 """
 from __future__ import annotations
 
@@ -543,7 +543,6 @@ def main() -> None:
     parser.add_argument("--budget", type=float, default=None, help="monthly budget cap in USD (default 300)")
     parser.add_argument("--ccusage-path", default=None, help="explicit path to a ccusage binary or src/cli.js")
     parser.add_argument("--no-warm", action="store_true", help="skip background warm-up (first requests may be slow)")
-    parser.add_argument("--open", action="store_true", help="open browser after start")
     args = parser.parse_args()
 
     BUDGET = args.budget if args.budget is not None else float(os_env_budget() or 300.0)
@@ -575,55 +574,11 @@ def main() -> None:
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"
     print(f"ccusage-ui → {url}  (monthly budget ${BUDGET:g}, Ctrl+C to stop)", flush=True)
-    if args.open:
-        _open_browser(url)
-    else:
-        print(f"dashboard ready at {url} — open it in your browser", flush=True)
 
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nbye", flush=True)
-
-
-def _open_browser(url: str) -> None:
-    """Open the dashboard in a browser. Tries, in order:
-      1. $BROWSER (e.g. 'Google Chrome', 'Safari', 'firefox')
-      2. the OS default opener (open / xdg-open / start)
-      3. prints the URL as a fallback so the user can open it manually.
-    Every attempt logs its outcome so auto-open is verifiable.
-    """
-    import os
-    import subprocess
-    import sys
-
-    browser = os.environ.get("BROWSER", "").strip()
-    attempts = []
-    if sys.platform == "darwin":
-        if browser:
-            attempts.append(["open", "-a", browser, url])
-        attempts.append(["open", url])
-    elif sys.platform.startswith("win"):
-        if browser:
-            attempts.append(["cmd", "/c", "start", "", "chrome", url])
-        attempts.append(["cmd", "/c", "start", "", url])
-    else:
-        if browser:
-            attempts.append([browser, url])
-        attempts.append(["xdg-open", url])
-
-    for cmd in attempts:
-        try:
-            r = subprocess.run(cmd, timeout=5, capture_output=True, text=True)
-            if r.returncode == 0:
-                print(f"browser opened → {url} ({' '.join(cmd[:2])})", flush=True)
-                return
-            print(f"browser attempt failed (rc={r.returncode}): {' '.join(cmd[:2])}", flush=True)
-        except FileNotFoundError:
-            print(f"opener not found: {' '.join(cmd[:2])}", flush=True)
-        except Exception as e:  # noqa: BLE001
-            print(f"browser open error: {e}", flush=True)
-    print(f"could not auto-open a browser — open it manually: {url}", flush=True)
 
 
 def os_env_budget() -> str:

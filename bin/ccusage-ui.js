@@ -6,10 +6,8 @@
  * the local python3, forwarding any CLI args. The server itself shells out to
  * ccusage for all numbers, so the dashboard always matches ccusage.
  *
- * Startup UX:
- *   - the server tries to auto-open the default browser (best effort)
- *   - regardless of that, this launcher prints a clear URL banner once the
- *     server is up, so the user can always click/copy it manually.
+ * Startup UX: once the server is up, a clear URL banner is printed so the
+ * user can click/copy it to open the dashboard. No background magic.
  */
 'use strict';
 
@@ -58,9 +56,6 @@ const port = parseInt(argValue('--port', '8799'), 10);
 const url = `http://${host}:${port}`;
 
 const args = rawArgs.slice();
-if (!args.includes('--open') && !process.env.CCUSAGE_UI_NO_OPEN) {
-  args.push('--open'); // default: try to auto-open the browser (best effort)
-}
 
 const child = spawn(py, [serverPy, ...args], { stdio: 'inherit', env: { ...process.env } });
 
