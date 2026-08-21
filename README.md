@@ -82,10 +82,6 @@ python3 lib/server.py --budget 300    # run server directly from the repo
 node bin/ccusage-ui.js                # same as the npx experience
 ```
 
-## License
-
-MIT © Caius Kong
-
 ## Releasing a new version
 
 Releases are done entirely from the GitHub Actions tab (no local commands, full audit log):
@@ -99,3 +95,7 @@ You can also trigger it with the CLI:
 ```bash
 gh workflow run "Publish to npm"   # bumps patch
 ```
+
+## License
+
+MIT © Caius Kong
