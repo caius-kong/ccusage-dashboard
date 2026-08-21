@@ -7,15 +7,13 @@
  * ccusage for all numbers, so the dashboard always matches ccusage.
  *
  * Modes:
- *   foreground (default) — the server runs attached to this terminal; Ctrl+C
- *                          stops it. A URL banner is printed when it is up.
- *   --daemon             — start the server detached in the background, print
- *                          the URL, and exit immediately. The server keeps
- *                          running after this terminal closes. If a server is
- *                          already up on the port, it reuses it instead of
- *                          starting a second one.
+ *   default            — start the server detached in the background, print
+ *                        the URL, and exit immediately. The server keeps running
+ *                        after this terminal closes. If a server is already up on
+ *                        the port, it reuses it instead of starting a second one.
+ *   --foreground       — run the server attached to this terminal (Ctrl+C stops it).
  *
- * Stop a daemon with:  npx @caius_kong/ccusage-dashboard --stop
+ * Stop a background instance with:  npx @caius_kong/ccusage-dashboard --stop
  */
 'use strict';
 
@@ -63,11 +61,12 @@ function argValue(name, fallback) {
 const host = argValue('--host', '127.0.0.1');
 const port = parseInt(argValue('--port', '8799'), 10);
 const url = `http://${host}:${port}`;
-const wantDaemon = rawArgs.includes('--daemon');
+const wantDaemon = !rawArgs.includes('--foreground'); // background by default
 const wantStop = rawArgs.includes('--stop');
+const wantForeground = rawArgs.includes('--foreground');
 
 // Filter launcher-only flags before forwarding to server.py.
-const serverArgs = rawArgs.filter((a) => !['--daemon', '--stop'].includes(a));
+const serverArgs = rawArgs.filter((a) => !['--daemon', '--stop', '--foreground'].includes(a));
 
 // --- daemon pid file (per host:port) ----------------------------------------
 function pidFile() {
@@ -104,7 +103,7 @@ function printBanner() {
   console.log(`  Open it manually:      ${url}`);
   console.log(line);
   if (wantDaemon) {
-    console.log(`  (background mode — stop with: npx @caius_kong/ccusage-dashboard --stop)`);
+    console.log(`  (background — stop with: npx @caius_kong/ccusage-dashboard --stop)`);
     console.log('');
   }
 }

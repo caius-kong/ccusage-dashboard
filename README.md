@@ -50,16 +50,17 @@ for you to open.
 npx @caius_kong/ccusage-dashboard --port 9000     # change port
 npx @caius_kong/ccusage-dashboard --budget 500    # monthly budget cap (default $300)
 npx @caius_kong/ccusage-dashboard --no-warm       # skip background warm-up
-npx @caius_kong/ccusage-dashboard --daemon        # run in the background (terminal exits, server keeps running)
-npx @caius_kong/ccusage-dashboard --stop          # stop a background instance
+npx @caius_kong/ccusage-dashboard --foreground   # run attached to this terminal (Ctrl+C stops it)
+npx @caius_kong/ccusage-dashboard --stop          # stop the background instance
 ```
 
 Once started, the launcher prints the dashboard URL — open it in your browser
 (no browser is auto-launched).
 
-**`--daemon`** starts the server detached so you can close the terminal and it keeps
-running; run `--stop` to shut it down. Running `--daemon` again reuses the running
-instance instead of starting a second one.
+By default the dashboard runs **in the background**: after printing its URL the
+launcher exits and the server keeps running, so you can close the terminal. Use
+`--stop` to shut it down; running it again reuses the already-running instance.
+`--foreground` keeps it attached to the terminal instead (Ctrl+C to stop).
 
 ## What it shows
 
