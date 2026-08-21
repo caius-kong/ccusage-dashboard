@@ -230,8 +230,9 @@ def sessions(since_days: int = 30) -> dict:
                 "cacheReadTokens": r.get("cacheReadTokens", 0),
                 "cacheCreationTokens": r.get("cacheCreationTokens", 0),
                 "lastActivity": last_activity,
-                "cwd": cwd,          # absolute-ish path, empty if ccusage didn't provide it
+                "cwd": cwd,            # best-effort decoded path, empty if ccusage didn't provide it
                 "dirName": dir_name,  # last path segment; empty if ccusage didn't provide
+                "projectKey": project_raw,  # raw ccusage projectPath (authoritative, may be encoded)
                 "hasCwd": bool(project_raw),
             }
         )
@@ -242,12 +243,18 @@ def sessions(since_days: int = 30) -> dict:
 def _decode_cwd(raw: str) -> str:
     """Best-effort decode of ccusage's projectPath into a readable path.
 
-    pi's projectPath is a Claude-Code-style encoded dir name where '/' became '-'.
+    pi's projectPath is a Claude-Code-style encoded dir name where '/' became '-',
+    and literal '-' inside a dir name is NOT distinguishable from the separator
+    (encoding is lossy). So this is approximate: 'fund-tracker' may come back as
+    'fund/tracker'. The authoritative string is the raw projectPath itself.
     Example: '--Users-caius-kong-Documents-...-AutoTrans--' -> /Users/caius_kong/.../AutoTrans
     """
     if not raw:
         return ""
-    return raw.replace("-", "/")
+    parts = [p for p in raw.replace("-", "/").split("/") if p]
+    if not parts:
+        return ""
+    return "/" + "/".join(parts)
 
 
 def _basename(raw: str) -> str:
