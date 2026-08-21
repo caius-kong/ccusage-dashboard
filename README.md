@@ -56,13 +56,14 @@ CCUSAGE_UI_NO_OPEN=1 npx @caius_kong/ccusage-dashboard   # don't auto-open brows
 
 | | |
 |---|---|
-| **Today / This Week / This Month / Custom Range** | totals + tokens + cache breakdown |
+| **Today / This Week / This Month / Custom Range** | totals + tokens + cache breakdown + **cache hit rate** |
 | **By model** | per-model cost, % of total, in/out/cache-read/cache-write tokens |
 | **30-day trend** | daily cost bar chart (hover for values, weekends marked) |
-| **Sessions** | per-session rows grouped by workdir name + short session id, filterable 7d/30d/90d/all, sorted by cost |
+| **Sessions** | per-session rows grouped by workdir name + short session id, sorted by cost — shares the top time-filter tabs (today/week/month/custom) |
 | **Budget alert** | monthly cap (default $300) — green <80%, yellow <100%, red ≥100% |
 
-All costs in USD. Auto-refresh every 15s.
+All costs in USD. **Cache hit rate** is the standard input-side metric:
+`cacheReadTokens / (cacheReadTokens + non-cached inputTokens)`. Auto-refresh every 15s.
 
 ## How it works
 
