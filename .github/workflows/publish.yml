@@ -1,29 +1,33 @@
 name: Publish to npm
 
-# Two ways to release a new version:
-#   1. MANUAL (recommended): Actions tab → "Publish to npm" → Run workflow,
-#      fill in the new "Version" (e.g. 1.2.3). Bumps package.json, tags v1.2.3,
-#      and publishes — no local commands needed.
-#   2. TAG: push a tag like `v0.1.2` (works when package.json is already bumped).
+# Manual release (recommended):
+#   Actions tab → "Publish to npm" → Run workflow.
+#
+#   - Leave "Version" empty → bumps a patch (e.g. 0.2.0 → 0.2.1)
+#   - Or type a semver (no "v" prefix), e.g. "1.2.3" → releases exactly that
+#
+# The workflow bumps package.json, commits, tags vX.Y.Z, pushes back to main,
+# and publishes to npm — everything happens here in CI, with a full audit log.
+# Nothing to run locally; no local clean-tree requirement.
+
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'New version to publish (semver, no "v" prefix)'
+        description: 'New version to publish (semver, no "v" prefix). Empty = bump patch automatically.'
         required: false
         type: string
-  push:
-    tags:
-      - 'v*'
 
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # to push the version-bump commit + tag
+      contents: write   # commit the version bump + push the tag
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed for npm version to see the previous tag
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -31,14 +35,23 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org/
 
-      # Manual dispatch: bump version, commit, and tag to keep repo in sync.
-      - name: Bump version (manual dispatch)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Configure git bot
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          npm version "${{ inputs.version }}" -m "chore: release v%s"
-          git push --follow-tags origin main
+
+      # Bump version: explicit input wins, else auto patch.
+      - name: Bump version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            npm version "${{ inputs.version }}" -m "chore: release v%s"
+          else
+            npm version patch -m "chore: release v%s"
+          fi
+          echo "Releasing $(node -p "require('./package.json').version")"
+
+      - name: Push bump + tag back to main
+        run: git push --follow-tags origin main
 
       - name: Install deps
         run: npm install --package-lock-only --ignore-scripts
