@@ -5,9 +5,15 @@
 **A tiny local dashboard built specifically for [ccusage](https://github.com/ccusage/ccusage).**
 
 > ⚠️ **This is not a re-implementation.** Every number you see comes straight from
-> `ccusage ... --json`. No own pricing tables, no re-parsing of session logs — the
-> dashboard is a thin view over ccusage's own accurate cost engine. If `ccusage`
+> `ccusage ... --json`. No own pricing tables, no re-parsing of session logs for costs —
+> the dashboard is a thin view over ccusage's own accurate cost engine. If `ccusage`
 > says it, this dashboard shows it.
+>
+> The only exception is the **workdir label** in the Sessions tab: ccusage's session
+> report doesn't expose a real directory name for every agent, so the dashboard reads
+> each agent's own local session file (pi/openclaw/claude/codex stores) to display the
+> actual working directory. This is purely a display label — every cost/token number
+> still comes 100% from ccusage.
 
 </div>
 
@@ -53,9 +59,10 @@ CCUSAGE_UI_NO_OPEN=1 npx @caius_kong/ccusage-dashboard   # don't auto-open brows
 | **Today / This Week / This Month / Custom Range** | totals + tokens + cache breakdown |
 | **By model** | per-model cost, % of total, in/out/cache-read/cache-write tokens |
 | **30-day trend** | daily cost bar chart (hover for values, weekends marked) |
+| **Sessions** | per-session rows grouped by workdir name + short session id, filterable 7d/30d/90d/all, sorted by cost |
 | **Budget alert** | monthly cap (default $300) — green <80%, yellow <100%, red ≥100% |
 
-All costs in USD. Auto-refresh: today every 15s, others every 60s.
+All costs in USD. Auto-refresh every 15s.
 
 ## How it works
 

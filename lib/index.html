@@ -188,8 +188,8 @@ function renderSessions(data){
   if(!list.length){$("sessionsList").innerHTML='<div class="empty">no sessions in range</div>';return;}
   $("sessionsList").innerHTML=list.map(s=>{
     const label = s.hasCwd
-      ? `<span class="name" title="workdir from ccusage: ${esc(s.cwd||s.projectKey)}">${esc(s.dirName||s.id.slice(0,8))} <span class="pill sessid">${esc(s.id.slice(0,8))}</span></span>`
-      : `<span class="name muted" title="workdir not provided by ccusage for ${esc(s.agent)}">${esc(s.id.slice(0,8))}</span>`;
+      ? `<span class="name" title="workdir: ${esc(s.cwd||s.projectKey)}">${esc(s.dirName||s.id.slice(0,8))} <span class="pill sessid">${esc(s.id.slice(0,8))}</span></span>`
+      : `<span class="name muted" title="no workdir found for this ${esc(s.agent)} session">${esc(s.id.slice(0,8))}</span>`;
     const last=(s.lastActivity||"").slice(0,10);
     return `<div class="row">
       <div class="row-top"><span>${label} <span class="pill">${esc(s.agent)}</span></span><span class="cost">${fmtUsd(s.cost)}</span></div>

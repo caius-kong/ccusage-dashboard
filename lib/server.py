@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -194,8 +195,9 @@ def trend(days: int = 30) -> dict:
 
 
 def sessions(since_days: int = 30) -> dict:
-    """Return ccusage's session report, with each session's cwd (projectPath) when
-    ccusage provides it. Data comes 100% from ccusage — we only re-shape it.
+    """Return ccusage's session report, each with its real workdir (dirName) when
+    the agent's local session store records one. Every numeric cost/token field
+    comes 100% from ccusage; the workdir is only a display label.
     """
     data = run_ccusage(
         ["session", "--by-agent", "--json", "--offline"],
@@ -218,33 +220,39 @@ def sessions(since_days: int = 30) -> dict:
             if act_date is not None and act_date < cutoff:
                 continue
         project_raw = meta.get("projectPath") or ""
-        dir_name = _basename(project_raw)
-        cwd = _decode_cwd(project_raw)
-        # For pi sessions the authoritative workdir lives on disk (session file first-line
-        # "cwd"). Your dashboards want the REAL dir name (e.g. "fund-tracker", not the
-        # lossy basename "tracker"). This only affects the DISPLAY label — all numeric
-        # cost/token data still comes 100% from ccusage.
-        if project_raw and dir_name:
-            disk_cwd = _pi_cwd_from_disk(project_raw)
+        # Resolve the authoritative workdir (dir name) for every agent that stores one
+        # locally. ccusage's projectPath only covers pi and is lossy for hyphenated names
+        # ("fund-tracker" -> "tracker"). Each agent keeps its own session store whose
+        # files carry the real cwd, so we read those. This ONLY affects the display label
+        # (dirName/cwd) — every numeric cost/token field still comes 100% from ccusage.
+        agent_name = r.get("agent", "?")
+        cwd = ""
+        dir_name = ""
+        if sid:
+            disk_cwd = _cwd_for(agent_name, sid, project_raw)
             if disk_cwd:
                 cwd = disk_cwd
-                disk_base = disk_cwd.rstrip("/").split("/")[-1]
-                if disk_base:
-                    dir_name = disk_base
+                cwd_base = disk_cwd.rstrip("/").split("/")[-1]
+                if cwd_base:
+                    dir_name = cwd_base
+        if not cwd:
+            # fall back to a best-effort decode of ccusage's projectPath (pi only)
+            cwd = _decode_cwd(project_raw)
+            dir_name = _basename(project_raw)
         out.append(
             {
                 "id": sid or "",
-                "agent": r.get("agent", "?"),
+                "agent": agent_name,
                 "cost": round(r.get("totalCost", 0) or 0, 4),
                 "inputTokens": r.get("inputTokens", 0),
                 "outputTokens": r.get("outputTokens", 0),
                 "cacheReadTokens": r.get("cacheReadTokens", 0),
                 "cacheCreationTokens": r.get("cacheCreationTokens", 0),
                 "lastActivity": last_activity,
-                "cwd": cwd,            # real workdir when known (pi), else best-effort decode
-                "dirName": dir_name,  # real dir name when known (pi), else last path segment
+                "cwd": cwd,            # real workdir when resolved, else best-effort decode
+                "dirName": dir_name,  # real dir name when resolved, else last path segment
                 "projectKey": project_raw,  # raw ccusage projectPath
-                "hasCwd": bool(project_raw),
+                "hasCwd": bool(cwd),
             }
         )
     out.sort(key=lambda s: s["cost"], reverse=True)
@@ -269,27 +277,139 @@ def _pi_cwd_from_disk(project_key: str):
         if not root.is_dir():
             return None
         candidates = sorted(glob.glob(str(root / "*.jsonl")))
-        if not candidates:
-            return None
         for path in candidates:
-            try:
-                with open(path, encoding="utf-8") as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            rec = json.loads(line)
-                        except Exception:
-                            continue
-                        cwd = rec.get("cwd")
-                        if isinstance(cwd, str) and cwd.strip():
-                            return cwd.strip().rstrip("/")
-            except (OSError, ValueError):
-                continue
+            cwd = _cwd_from_jsonl(path)
+            if cwd:
+                return cwd
     except Exception:
         return None
     return None
+
+
+# --- Unified authoritative-workdir resolution for every agent that stores one ---
+#
+# ccusage's session report only exposes projectPath for pi (and it's lossy for
+# hyphenated dir names). To show the REAL dir name for all sessions we resolve the
+# workdir from each agent's own local session store. This drives only the DISPLAY
+# label (dirName); every numeric cost/token value still comes 100% from ccusage.
+
+_CWD_CACHE = {}      # "agent\x1fsid" -> cwd | None
+_AGENT_INDEX = {}     # agent -> {session_id: [paths]} (built lazily)
+
+
+def _cwd_from_jsonl(path):
+    """Scan a session .jsonl (first few lines) for the first real 'cwd' string."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for _ in range(80):
+                line = fh.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(rec, dict):
+                    cwd = rec.get("cwd")
+                    if isinstance(cwd, str) and cwd.strip():
+                        return cwd.strip().rstrip("/")
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _codex_cwd(path):
+    """codex stores cwd inside the session_meta payload, not top-level."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for _ in range(200):
+                line = fh.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(rec, dict) and rec.get("type") == "session_meta":
+                    cwd = (rec.get("payload") or {}).get("cwd")
+                    if isinstance(cwd, str) and cwd.strip():
+                        return cwd.strip().rstrip("/")
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _agent_index(agent):
+    """Build (once) a {session_id: [paths]} for an agent's local session store."""
+    if agent in _AGENT_INDEX:
+        return _AGENT_INDEX[agent]
+    home = Path.home()
+    idx = {}
+    if agent == "openclaw":
+        base = home / ".openclaw" / "agents" / "main" / "sessions"
+        for f in (base.glob("*.jsonl") if base.is_dir() else []):
+            idx.setdefault(f.name[:-6], []).append(str(f))
+    elif agent == "claude":
+        proj = home / ".claude" / "projects"
+        if proj.is_dir():
+            for sub in proj.iterdir():
+                if sub.is_dir():
+                    for f in sub.glob("*.jsonl"):
+                        idx.setdefault(f.name[:-6], []).append(str(f))
+    elif agent == "codex":
+        root = home / ".codex" / "sessions"
+        if root.is_dir():
+            for f in root.glob("*/*/*/rollout-*.jsonl"):
+                idx.setdefault(f.name[len("rollout-"):-len(".jsonl")], []).append(str(f))
+            for f in root.glob("*/*/rollout-*.jsonl"):
+                idx.setdefault(f.name[len("rollout-"):-len(".jsonl")], []).append(str(f))
+    _AGENT_INDEX[agent] = idx
+    return idx
+
+
+def _session_to_cwd(agent, sid):
+    """Locate an agent's session file by id and return its real cwd (or None)."""
+    paths = _agent_index(agent).get(sid)
+    if not paths:
+        return None
+    for p in paths:
+        cwd = _codex_cwd(p) if agent == "codex" else _cwd_from_jsonl(p)
+        if cwd:
+            return cwd
+    return None
+
+
+def _cwd_for(agent, sid, project_key=""):
+    """Real workdir for a session. pi resolves by project key; the rest by session id.
+    Returns the real cwd (or None if unresolvable). Only drives the DISPLAY label."""
+    if agent == "pi":
+        if not project_key:
+            return None
+        key = "pi\x1f" + project_key
+        if key in _CWD_CACHE:
+            return _CWD_CACHE[key]
+        cwd = _pi_cwd_from_disk(project_key)
+        _CWD_CACHE[key] = cwd
+        return cwd
+    if not sid:
+        return None
+    # codex session ids are date-path prefixed ("2025/10/17/rollout-<id>"); the
+    # local file is named "rollout-<id>.jsonl", so match on the final segment.
+    lookup_sid = sid.split("/")[-1]
+    if lookup_sid.startswith("rollout-") and agent == "codex":
+        lookup_sid = lookup_sid[len("rollout-"):]
+    key = agent + "\x1f" + lookup_sid
+    if key in _CWD_CACHE:
+        return _CWD_CACHE[key]
+    cwd = _session_to_cwd(agent, lookup_sid)
+    _CWD_CACHE[key] = cwd
+    return cwd
 
 
 def _decode_cwd(raw: str) -> str:
