@@ -55,7 +55,9 @@
   .range button{background:var(--panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px}
   .range button:hover{border-color:var(--accent)}
   .range button.active{background:var(--accent);border-color:var(--accent);color:#0d1117;font-weight:600}
-  .sessid{font-variant-numeric:tabular-nums;letter-spacing:.3px}
+  .sessid{font-variant-numeric:tabular-nums;letter-spacing:.3px;cursor:pointer;transition:background .15s,border-color .15s,color .15s}
+  .sessid:hover{background:var(--accent);border-color:var(--accent);color:#0d1117}
+  .sessid.copied{background:var(--green);border-color:var(--green);color:#0d1117}
   .budget-band{margin:2px 0 14px;background:var(--panel-2);border-radius:8px;padding:12px 16px;display:flex;flex-direction:column;gap:8px}
   .budget-band .bl{display:flex;justify-content:space-between;font-size:13px;color:var(--muted)}
   .budget-band .bl b{color:var(--text)}
@@ -133,6 +135,24 @@ function fmtTok(n){
 }
 function fmtPct(n){return n==null?"–":n.toFixed(1)+"%";}
 function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+async function copySessionId(id, ev){
+  ev.stopPropagation();
+  const el=ev.currentTarget; // capture before any await; currentTarget is nulled after dispatch
+  try{
+    await navigator.clipboard.writeText(id);
+  }catch(e){
+    // fallback for non-secure contexts / older browsers
+    const ta=document.createElement("textarea");
+    ta.value=id;ta.style.position="fixed";ta.style.opacity="0";
+    document.body.appendChild(ta);ta.select();
+    try{document.execCommand("copy");}catch(_){}
+    document.body.removeChild(ta);
+  }
+  el.classList.add("copied");
+  const old=el.textContent;
+  el.textContent="✓ copied";
+  setTimeout(()=>{el.textContent=old;el.classList.remove("copied");},1200);
+}
 
 function renderModels(data){
   const total=data.totalCost||0;
@@ -190,9 +210,11 @@ function renderSessions(data){
   $("sessRange").textContent=`${total} sessions`;
   if(!list.length){$("sessionsList").innerHTML='<div class="empty">no sessions in range</div>';return;}
   $("sessionsList").innerHTML=list.map(s=>{
+    const shortId=s.id.slice(0,8);
+    const idPill=`<span class="pill sessid" title="click to copy full session id" onclick="copySessionId('${s.id.replace(/[\\']/g,"\\$&")}',event)">${esc(shortId)}</span>`;
     const label = s.hasCwd
-      ? `<span class="name" title="workdir: ${esc(s.cwd||s.projectKey)}">${esc(s.dirName||s.id.slice(0,8))} <span class="pill sessid">${esc(s.id.slice(0,8))}</span></span>`
-      : `<span class="name muted" title="no workdir found for this ${esc(s.agent)} session">${esc(s.id.slice(0,8))}</span>`;
+      ? `<span class="name" title="workdir: ${esc(s.cwd||s.projectKey)}">${esc(s.dirName||shortId)} ${idPill}</span>`
+      : `<span class="name muted" title="no workdir found for this ${esc(s.agent)} session">${idPill}</span>`;
     const last=(s.lastActivity||"").slice(0,10);
     return `<div class="row">
       <div class="row-top"><span>${label} <span class="pill">${esc(s.agent)}</span></span><span class="cost">${fmtUsd(s.cost)}</span></div>

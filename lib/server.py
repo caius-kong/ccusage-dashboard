@@ -202,14 +202,13 @@ def sessions(since_days: int = 30, period: str = "", from_date: str = "", to_dat
     Filtering: pass `period` in ("today" | "week" | "month") OR an explicit
     date range via `from_date`/`to_date` (YYYY-MM-DD). `since_days` is kept for
     backward compatibility with the old 7d/30d/90d/all selector.
-    """
-    data = run_ccusage(
-        ["session", "--by-agent", "--json", "--offline"],
-        TTL["/api/sessions"],
-    )
-    rows = data.get("session") or []
 
-    # ---- choose the cutoff window ----------------
+    The window is passed to ccusage as --since/--until so it filters by usage
+    EVENT date (entry.date) before summarising, exactly like the CLI session
+    report. Filtering rows ourselves by lastActivity would keep a whole session's
+    lifetime cost even when only a few events fall in the window, inflating the
+    total (observed: today $229 vs ccusage's true $0.09).
+    """
     today = date.today()
     lo = hi = None
     if from_date and to_date:
@@ -232,20 +231,17 @@ def sessions(since_days: int = 30, period: str = "", from_date: str = "", to_dat
         lo = today - timedelta(days=since_days)
         hi = today
 
+    ccusage_args = ["session", "--json", "--offline"]
+    if lo and hi:
+        ccusage_args += ["--since", lo.isoformat(), "--until", hi.isoformat()]
+    data = run_ccusage(ccusage_args, TTL["/api/sessions"])
+    rows = data.get("session") or []
+
     out = []
     for r in rows:
         meta = r.get("metadata") or {}
         sid = r.get("period")
         last_activity = meta.get("lastActivity") or ""
-        # date filter by last activity against [lo, hi]
-        if last_activity:
-            try:
-                act_date = date.fromisoformat(last_activity[:10])
-            except ValueError:
-                act_date = None
-            if act_date is not None:
-                if act_date < lo or act_date > hi:
-                    continue
         project_raw = meta.get("projectPath") or ""
         agent_name = r.get("agent", "?")
         cwd = ""
