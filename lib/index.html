@@ -134,6 +134,18 @@ function fmtTok(n){
   return String(n);
 }
 function fmtPct(n){return n==null?"–":n.toFixed(1)+"%";}
+// cache hit rate (input side): read / (read + non-cached input). Shared by the
+// c5 summary card and per-row hit spans.
+function cacheHitStats(o){
+  const readIn=(o&&o.cacheReadTokens)||0, missIn=(o&&o.inputTokens)||0;
+  const rate=(readIn+missIn)>0?(readIn/(readIn+missIn))*100:null;
+  return {readIn, missIn, rate};
+}
+function cacheHitSpan(o){
+  const {readIn, missIn, rate}=cacheHitStats(o);
+  const tip=rate!=null?`cache hit rate: ${fmtPct(rate)} (read ${fmtTok(readIn)} / in ${fmtTok(missIn)})`:"no cache read data";
+  return `<span title="${tip}">hit ${fmtPct(rate)}</span>`;
+}
 function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML;}
 async function copySessionId(id, ev){
   ev.stopPropagation();
@@ -165,7 +177,7 @@ function renderModels(data){
     const badge=m2?`<span class="pill">${esc(m2[1])}</span>`:"";
     const mn=m2?esc(m2[2]||m2[1]):esc(m.name);
     return `<div class="row"><div class="row-top"><span class="name">${mn}${badge ? " " + badge : ""}</span><span class="cost">${fmtUsd(m.cost)} · ${pct.toFixed(1)}%</span></div>
-      <div class="toks"><span title="input">in ${fmtTok(m.inputTokens)}</span><span title="output">out ${fmtTok(m.outputTokens)}</span><span title="cache read">read ${fmtTok(m.cacheReadTokens)}</span><span title="cache write">write ${fmtTok(m.cacheCreationTokens)}</span></div>
+      <div class="toks"><span title="input">in ${fmtTok(m.inputTokens)}</span><span title="output">out ${fmtTok(m.outputTokens)}</span><span title="cache read">read ${fmtTok(m.cacheReadTokens)}</span>${cacheHitSpan(m)}<span title="cache write">write ${fmtTok(m.cacheCreationTokens)}</span></div>
       <div class="bar"><div style="width:${Math.max(pct,1.2)}%"></div></div></div>`;
   }).join("");
 }
@@ -218,7 +230,7 @@ function renderSessions(data){
     const last=(s.lastActivity||"").slice(0,10);
     return `<div class="row">
       <div class="row-top"><span>${label} <span class="pill">${esc(s.agent)}</span></span><span class="cost">${fmtUsd(s.cost)}</span></div>
-      <div class="toks">${last?`<span>${esc(last)}</span>`:""}<span title="input">in ${fmtTok(s.inputTokens)}</span><span title="output">out ${fmtTok(s.outputTokens)}</span><span title="cache read">read ${fmtTok(s.cacheReadTokens)}</span><span title="cache write">write ${fmtTok(s.cacheCreationTokens)}</span></div>
+      <div class="toks">${last?`<span>${esc(last)}</span>`:""}<span title="input">in ${fmtTok(s.inputTokens)}</span><span title="output">out ${fmtTok(s.outputTokens)}</span><span title="cache read">read ${fmtTok(s.cacheReadTokens)}</span>${cacheHitSpan(s)}<span title="cache write">write ${fmtTok(s.cacheCreationTokens)}</span></div>
     </div>`;
   }).join("");
 }
@@ -232,10 +244,9 @@ function applyCards(data){
   $("c3").textContent=fmtTok(data.cacheReadTokens);
   $("c4").textContent=fmtTok(data.cacheCreationTokens);
   // cache hit rate = cache-read input / (cache-read input + non-cached input)
-  const hitIn=data.cacheReadTokens||0, plainIn=data.inputTokens||0;
-  const hitRate = (hitIn+plainIn)>0 ? (hitIn/(hitIn+plainIn))*100 : null;
+  const {readIn, missIn, rate: hitRate}=cacheHitStats(data);
   $("c5").innerHTML=fmtPct(hitRate)+(hitRate!=null?"<small> cache</small>":"");
-  $("c5p").textContent=hitRate!=null?`${fmtTok(plainIn)} miss · ${fmtTok(hitIn)} hit`:"";
+  $("c5p").textContent=hitRate!=null?`${fmtTok(missIn)} miss · ${fmtTok(readIn)} hit`:"";
   $("c1label").textContent=tabs[active].label;
   $("modelSum").textContent=fmtUsd(total);
 }
