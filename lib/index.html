@@ -49,6 +49,19 @@
   .empty{color:var(--muted);padding:18px 0;text-align:center}
   .err{color:var(--red)}
   .pill{background:var(--panel-2);border:1px solid var(--border);border-radius:999px;padding:1px 8px;font-size:11px;color:var(--muted);margin-left:6px}
+  .upd-btn{background:transparent;border:1px solid var(--border);border-radius:999px;padding:2px 11px;font-size:11px;color:var(--muted);cursor:pointer;font-family:inherit;transition:border-color .15s,color .15s}
+  .upd-btn:hover{border-color:var(--accent);color:var(--text)}
+  .upd-btn:disabled{opacity:.55;cursor:default}
+  .btn{background:var(--panel-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:5px 14px;cursor:pointer;font-family:inherit;font-size:13px}
+  .btn:hover{border-color:var(--accent)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#0d1117;font-weight:600}
+  .modal-mask{position:fixed;inset:0;background:rgba(1,4,9,.6);display:flex;align-items:center;justify-content:center;z-index:60}
+  .modal{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px 20px;max-width:430px;width:calc(100vw - 40px);box-shadow:0 14px 44px rgba(0,0,0,.5)}
+  .modal h3{font-size:15px;margin:0 0 10px}
+  .modal .body{color:var(--text);font-size:13px;line-height:1.55}
+  .cmd{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin:12px 0}
+  .cmd code{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--text);word-break:break-all}
+  .modal .foot{display:flex;justify-content:flex-end;margin-top:16px}
   .hint{color:var(--muted);font-size:12px;margin-top:14px;text-align:center}
   .range{display:flex;gap:8px;align-items:center;margin-left:6px;flex-wrap:wrap}
   .range input{background:var(--panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:12px;font-family:inherit}
@@ -71,7 +84,7 @@
 <header>
   <h1>ccusage · Live Cost</h1>
   <span class="sub">by model, straight from ccusage</span>
-  <span class="status"><span class="dot" id="dot"></span><span id="status">connecting…</span></span>
+  <span class="status"><button class="upd-btn" id="updBtn" type="button" title="Check the npm registry for a newer version">⇪ check update</button><span class="dot" id="dot"></span><span id="status">connecting…</span></span>
 </header>
 
 <div class="tabs" role="tablist" aria-label="Time period">
@@ -120,11 +133,64 @@
 
 <div class="hint">auto-refresh 15s · costs in USD · <span id="lastUpd"></span></div>
 
+<div class="modal-mask" id="updModal" style="display:none">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="updTitle">
+    <h3 id="updTitle"></h3>
+    <div class="body" id="updBody"></div>
+    <div class="foot"><button class="btn primary" id="updOk" type="button">OK</button></div>
+  </div>
+</div>
+
 <script>
 const $=(id)=>document.getElementById(id);
 const tabs={today:{label:"Today",len:0},week:{label:"This Week",len:0},month:{label:"This Month",len:0},range:{label:"Custom Range",len:1}};
 let active="today", modelCtx=[];
 
+const PKG_NPM="@caius_kong/ccusage-dashboard";
+const CMD_UPDATE=`npx ${PKG_NPM}@latest`;
+function showUpdModal(title,body){
+  $("updTitle").textContent=title;
+  $("updBody").innerHTML=body;
+  $("updModal").style.display="flex";
+}
+function hideUpdModal(){$("updModal").style.display="none";}
+async function copyText(t,btn){
+  try{await navigator.clipboard.writeText(t);}
+  catch(e){
+    const ta=document.createElement("textarea");ta.value=t;ta.style.position="fixed";ta.style.opacity="0";
+    document.body.appendChild(ta);ta.select();
+    try{document.execCommand("copy");}catch(_){}
+    document.body.removeChild(ta);
+  }
+  const old=btn.textContent;btn.textContent="copied ✓";
+  setTimeout(()=>{btn.textContent=old;},1200);
+}
+async function checkUpdate(){
+  const b=$("updBtn"),orig=b.textContent;
+  b.disabled=true;b.textContent="checking…";
+  try{
+    const d=await(await fetch("/api/update")).json();
+    if(d.disabled){
+      showUpdModal("Update check is off","This instance was started with <code>--no-update-check</code>, so version checks are disabled.");
+    }else if(d.error){
+      showUpdModal("Couldn't reach npm","The npm registry is not reachable right now. Check your internet connection and try again.");
+    }else if(d.outdated){
+      const cur=esc(d.current||"?"),lat=esc(d.latest||"?");
+      showUpdModal("Update available",
+        `You're running <b>v${cur}</b> — the latest version is <b>v${lat}</b>.<br>`+
+        `Update by running this in your terminal:`+
+        `<div class="cmd"><code>${CMD_UPDATE}</code><button class="btn" id="updCopy" type="button">copy</button></div>`+
+        `<div style="color:var(--muted);font-size:12px">Then restart the dashboard (run <code>--stop</code> first if it's running in the background).</div>`);
+      const cp=$("updCopy");if(cp)cp.addEventListener("click",(ev)=>copyText(CMD_UPDATE,ev.currentTarget));
+    }else{
+      showUpdModal("Up to date",`You're on the latest version <b>v${esc(d.current||"?")}</b> ✓`);
+    }
+  }catch(e){
+    showUpdModal("Check failed","Couldn't reach the dashboard server for a version check.");
+  }finally{
+    b.disabled=false;b.textContent=orig;
+  }
+}
 function fmtUsd(n){return "$"+(n==null?"–":Number(n).toFixed(2));}
 function fmtTok(n){
   if(n==null)return "–";
@@ -364,6 +430,9 @@ document.querySelectorAll(".tab").forEach(t=>{
   t.addEventListener("keydown",(e)=>{if(e.key==="Enter"||e.key===" "||e.key==="Spacebar"){e.preventDefault();activate();}});
 });
 $("rangeGo").addEventListener("click",rangeApply);
+$("updBtn").addEventListener("click",checkUpdate);
+$("updOk").addEventListener("click",hideUpdModal);
+$("updModal").addEventListener("click",(e)=>{if(e.target.id==="updModal")hideUpdModal();});
 
 tick();
 setInterval(tick,15000);

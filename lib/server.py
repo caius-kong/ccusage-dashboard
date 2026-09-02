@@ -8,8 +8,13 @@ It shells out to ccusage's JSON reports and renders:
   - a monthly budget alert (default cap: $300)
 
 Because all numbers come from ccusage itself, the figures always match what
-`ccusage` reports (the source you already trust). No network, no pricing table
-to maintain, no third-party packages — only the Python standard library.
+`ccusage` reports (the source you already trust). No pricing table to maintain,
+no third-party packages — only the Python standard library. The sole optional
+This dashboard is fully offline except one manual check: clicking the
+"⇪ check update" button in the header makes a single request to the npm
+registry and shows the result in a popup (up to date / update available
+with the `npx @caius_kong/ccusage-dashboard@latest` command to run yourself /
+unreachable). Nothing is ever checked automatically.
 
 Usage:
     python3 server.py [--port 8799] [--budget 300]
@@ -25,6 +30,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -97,6 +103,19 @@ def _node() -> str:
 BUDGET = 300.0  # monthly cap in USD (override via --budget or CCUSAGE_BUDGET)
 TTL = {"/api/today": 15, "/api/week": 60, "/api/month": 60, "/api/range": 120, "/api/trend": 120, "/api/sessions": 60}
 
+# --- optional self-update check (purely user-triggered) ----------------------
+# The dashboard is otherwise fully offline: it makes a network request ONLY when
+# the user clicks the "check update" button in the UI. A short debounce stops
+# rapid re-clicks from hammering the registry. Disable entirely with
+# --no-update-check / CCUSAGE_NO_UPDATE_CHECK=1.
+PACKAGE_NAME = "@caius_kong/ccusage-dashboard"
+UPDATE_CHECKS = os.environ.get("CCUSAGE_NO_UPDATE_CHECK", "").lower() not in ("1", "true", "yes")
+UPDATE_REGISTRY = os.environ.get("CCUSAGE_REGISTRY", "https://registry.npmjs.org")
+CHECK_DEBOUNCE = 10  # seconds; ignore bursts of clicks
+
+_update_lock = threading.Lock()
+_last_check = None  # (timestamp, result dict) — debounce + last outcome
+
 
 def run_ccusage(args: list[str], ttl: float) -> dict:
     key = " ".join(args)
@@ -118,6 +137,77 @@ def run_ccusage(args: list[str], ttl: float) -> dict:
     with _lock:
         _cache[key] = (now + ttl, data)
     return data
+
+
+def _read_current_version() -> str | None:
+    """Version of the running package. Finds the nearest package.json whose name
+    is ours (installed layout: <pkg>/package.json next to lib/; dev: repo root)."""
+    try:
+        for parent in APP_DIR.parents:
+            pj = parent / "package.json"
+            if pj.is_file():
+                meta = json.loads(pj.read_text(encoding="utf-8"))
+                if meta.get("name") == PACKAGE_NAME and meta.get("version"):
+                    return str(meta["version"])
+    except Exception:
+        return None
+    return None
+
+
+def _num(s: str) -> int:
+    m = re.match(r"\d+", s)
+    return int(m.group()) if m else 0
+
+
+def compare_versions(a: str, b: str) -> int:
+    """Minimal numeric semver compare for simple x.y.z tags (no deps)."""
+    pa = [_num(x) for x in re.sub(r"^v", "", a).split("-")[0].split(".")]
+    pb = [_num(x) for x in re.sub(r"^v", "", b).split("-")[0].split(".")]
+    for i in range(max(len(pa), len(pb))):
+        x = pa[i] if i < len(pa) else 0
+        y = pb[i] if i < len(pb) else 0
+        if x != y:
+            return -1 if x < y else 1
+    return 0
+
+
+def _fetch_latest_version() -> str:
+    """One GET to the npm registry's <latest> dist-tag endpoint."""
+    pkg = PACKAGE_NAME.replace("/", "%2F")
+    url = f"{UPDATE_REGISTRY.rstrip('/')}/{pkg}/latest"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": f"ccusage-dashboard/{_read_current_version() or 'unknown'}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=4) as resp:
+        return str(json.loads(resp.read().decode("utf-8"))["version"])
+
+
+def check_now() -> dict:
+    """One synchronous registry lookup, triggered by the user's click. Debounced
+    briefly so double-clicks don't hit the registry twice; never runs on its own."""
+    global _last_check
+    if not UPDATE_CHECKS:
+        return {"disabled": True, "outdated": False}
+    now = time.time()
+    with _update_lock:
+        if _last_check and now - _last_check[0] < CHECK_DEBOUNCE:
+            return _last_check[1]
+    current = _read_current_version()
+    try:
+        latest = _fetch_latest_version()
+        result = {
+            "current": current,
+            "latest": latest,
+            "outdated": bool(current) and bool(latest) and compare_versions(latest, current) > 0,
+        }
+    except Exception:
+        result = {"current": current, "latest": None, "outdated": False, "error": "unreachable"}
+    with _update_lock:
+        _last_check = (time.time(), result)
+    return result
 
 
 def pick_all_row(rows: list[dict]) -> dict:
@@ -492,6 +582,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/health":
             self._json({"ok": True, "budget": BUDGET})
             return
+        if path == "/api/update":
+            self._json(check_now())
+            return
 
         if path == "/api/today":
             data = run_ccusage(["daily", "--last", "1", "--json", "--offline"], TTL[path])
@@ -532,17 +625,20 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    global BUDGET, _CCUSAGE_PATH_OVERRIDE
+    global BUDGET, _CCUSAGE_PATH_OVERRIDE, UPDATE_CHECKS
     parser = argparse.ArgumentParser(description="ccusage dashboard")
     parser.add_argument("--port", type=int, default=8799)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--budget", type=float, default=None, help="monthly budget cap in USD (default 300)")
     parser.add_argument("--ccusage-path", default=None, help="explicit path to a ccusage binary or src/cli.js")
     parser.add_argument("--no-warm", action="store_true", help="skip background warm-up (first requests may be slow)")
+    parser.add_argument("--no-update-check", action="store_true", help="disable the npm version hint entirely")
     args = parser.parse_args()
 
     BUDGET = args.budget if args.budget is not None else float(os_env_budget() or 300.0)
     _CCUSAGE_PATH_OVERRIDE = args.ccusage_path
+    if args.no_update_check:
+        UPDATE_CHECKS = False
     print(f"using ccusage → {' '.join(resolve_ccusage())}", flush=True)
 
     def warm_one(fn):

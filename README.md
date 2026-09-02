@@ -52,6 +52,7 @@ npx @caius_kong/ccusage-dashboard --budget 500    # monthly budget cap (default 
 npx @caius_kong/ccusage-dashboard --no-warm       # skip background warm-up
 npx @caius_kong/ccusage-dashboard --foreground   # run attached to this terminal (Ctrl+C stops it)
 npx @caius_kong/ccusage-dashboard --stop          # stop the background instance
+npx @caius_kong/ccusage-dashboard --no-update-check  # disable the npm update hint entirely
 ```
 
 Once started, the launcher prints the dashboard URL — open it in your browser
@@ -74,6 +75,16 @@ launcher exits and the server keeps running, so you can close the terminal. Use
 
 All costs in USD. **Cache hit rate** is the standard input-side metric:
 `cacheReadTokens / (cacheReadTokens + non-cached inputTokens)`. Auto-refresh every 15s.
+
+## Update check (opt-out, purely manual)
+
+This dashboard is otherwise fully offline. The only way it touches the network
+is when **you click the "⇪ check update" button** in the header: the server then
+makes one quick request to the npm registry and pops up the result — up to date,
+update available (with the exact `npx @caius_kong/ccusage-dashboard@latest`
+command to run yourself in a terminal), or unreachable. Nothing is checked
+automatically, ever. Disable even this with `--no-update-check` or
+`CCUSAGE_NO_UPDATE_CHECK=1`.
 
 ## How it works
 
