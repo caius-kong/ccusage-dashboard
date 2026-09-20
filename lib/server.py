@@ -51,28 +51,37 @@ def resolve_ccusage() -> list[str]:
     npx cache, the bun cache, then fall back to `npx --yes ccusage@latest`.
     Returns a command list to run.
     """
+    def _pkg_version(cli: Path) -> tuple | None:
+        """Real version of the ccusage package owning `cli`.
+
+        Read it from package.json, NEVER from the directory path: npm's npx
+        cache uses opaque hash dirs (no "ccusage@x.y.z"), so path-regex would
+        degrade every candidate to (0, 0, 0) and make "pick highest" a silent
+        no-op that picks an arbitrary (often stale) version.
+        """
+        pj = cli.parent.parent / "package.json"
+        try:
+            m = re.search(r'"version"\s*:\s*"(\d+)\.(\d+)\.(\d+)', pj.read_text())
+        except OSError:
+            return None
+        return tuple(map(int, m.groups())) if m else None
+
     def _npx_cached_cli() -> str | None:
-        for base in ("npm", "bun"):
-            roots = []
-            if base == "npm":
-                target = Path.home() / ".npm/_npx"
-                if target.is_dir():
-                    roots.extend(p for p in target.glob("*/node_modules/ccusage/src/cli.js"))
-                # also newer npm layout
-                roots.extend((Path.home() / ".npm/_npx").glob("*/node_modules/ccusage/src/cli.js"))
-            else:
-                target = Path.home() / ".bun/install/cache"
-                if target.is_dir():
-                    roots.extend(p for p in target.glob("ccusage*/src/cli.js"))
-            # prefer highest semver-ish (sort by version suffix descending)
-            def _ver(p: Path) -> tuple:
-                s = p.as_posix()
-                m = re.search(r"ccusage@?(\d+)\.(\d+)\.(\d+)", s)
-                return tuple(map(int, m.groups())) if m else (0, 0, 0)
-            best = max(roots, key=_ver, default=None)
-            if best:
-                return str(best)
-        return None
+        """Highest-versioned ccusage in the npx/bun caches, or None.
+
+        Only candidates whose real version is readable are considered, so we
+        never fall back to an arbitrary pick. Returning None lets the caller
+        defer to `npx ccusage@latest`, which resolves the system's version.
+        """
+        roots = []
+        npm_target = Path.home() / ".npm/_npx"
+        if npm_target.is_dir():
+            roots.extend(npm_target.glob("*/node_modules/ccusage/src/cli.js"))
+        bun_target = Path.home() / ".bun/install/cache"
+        if bun_target.is_dir():
+            roots.extend(bun_target.glob("ccusage*/src/cli.js"))
+        scored = [(v, p) for p in roots if (v := _pkg_version(p)) is not None]
+        return str(max(scored)[1]) if scored else None
 
     explicit = _CCUSAGE_PATH_OVERRIDE
     if explicit:
@@ -80,11 +89,6 @@ def resolve_ccusage() -> list[str]:
     p = shutil.which("ccusage")
     if p:
         return [p]
-    # Bundled ccusage dependency: walk up from the package to find node_modules/ccusage
-    for parent in APP_DIR.parents:
-        bundled = parent / "node_modules" / "ccusage" / "src" / "cli.js"
-        if bundled.exists():
-            return [_node(), str(bundled)]
     cli = _npx_cached_cli()
     if cli:
         return [_node(), str(cli)]

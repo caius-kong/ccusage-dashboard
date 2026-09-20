@@ -37,9 +37,9 @@ to what ccusage itself reports** — the source you already trust.
 npx @caius_kong/ccusage-dashboard
 ```
 
-That's it. npx downloads the package (including its own `ccusage` dependency),
-starts a local server on `http://127.0.0.1:8799`, and prints the dashboard URL
-for you to open.
+That's it. npx downloads the package, uses the `ccusage` already on your machine
+(or fetches the latest via `npx`), starts a local server on `http://127.0.0.1:8799`,
+and prints the dashboard URL for you to open.
 
 > Requirements: **Node.js** (for the launcher) and **Python 3.8+** (for the server).
 > On macOS: `brew install python3`. No other installs, no build step, no config.
@@ -95,11 +95,12 @@ Browser (index.html)
 server.py  (Python stdlib, zero deps)
    │  spawns:  ccusage daily/monthly/weekly ... --json --offline
    ▼
-ccusage   (bundled dependency — the real cost engine)
+ccusage   (your installed version — the real cost engine)
 ```
 
 - `lib/server.py` — Python stdlib HTTP server. Resolves a local ccusage
-  (bundled dep → PATH → npx cache), warms caches on boot (~3s), then serves instant responses.
+  (PATH → npx cache → `npx ccusage@latest`), picking the highest real version so it
+  always matches the system's `ccusage`; warms caches on boot (~3s), then serves instant responses.
 - `lib/index.html` — single-file dashboard. No build step, no CDN.
 - `bin/ccusage-ui.js` — Node launcher (finds python3, starts server, prints URL).
 

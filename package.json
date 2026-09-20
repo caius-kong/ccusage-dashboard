@@ -32,9 +32,7 @@
     "url": "https://github.com/caius-kong/ccusage-dashboard"
   },
   "author": "Caius Kong",
-  "dependencies": {
-    "ccusage": "^20.0.20"
-  },
+  "dependencies": {},
   "publishConfig": {
     "access": "public"
   }
