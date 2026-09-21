@@ -43,66 +43,24 @@ _lock = threading.Lock()
 
 
 def resolve_ccusage() -> list[str]:
-    """Resolve a fast local ccusage entrypoint.
+    """Resolve the ccusage CLI the system itself uses, and only that.
 
-    Prefer a directly invocable local binary/cache so we don't pay an `npx`
-    resolution + possible network fetch on every report (~5-7s cold). Look for,
-    in order: an explicit --ccusage-path, a global `ccusage` on PATH, the npm
-    npx cache, the bun cache, then fall back to `npx --yes ccusage@latest`.
-    Returns a command list to run.
+    Hard constraint: every number comes from the ccusage CLI, and it must be
+    the same one the user runs (`npx ccusage ...`). So we look for, in order,
+    an explicit --ccusage-path, a `ccusage` on PATH, then `npx --yes ccusage`.
+    No cache-scanning and no version-picking: the version is whatever the
+    system resolves, never a stale copy we chose ourselves.
     """
-    def _pkg_version(cli: Path) -> tuple | None:
-        """Real version of the ccusage package owning `cli`.
-
-        Read it from package.json, NEVER from the directory path: npm's npx
-        cache uses opaque hash dirs (no "ccusage@x.y.z"), so path-regex would
-        degrade every candidate to (0, 0, 0) and make "pick highest" a silent
-        no-op that picks an arbitrary (often stale) version.
-        """
-        pj = cli.parent.parent / "package.json"
-        try:
-            m = re.search(r'"version"\s*:\s*"(\d+)\.(\d+)\.(\d+)', pj.read_text())
-        except OSError:
-            return None
-        return tuple(map(int, m.groups())) if m else None
-
-    def _npx_cached_cli() -> str | None:
-        """Highest-versioned ccusage in the npx/bun caches, or None.
-
-        Only candidates whose real version is readable are considered, so we
-        never fall back to an arbitrary pick. Returning None lets the caller
-        defer to `npx ccusage@latest`, which resolves the system's version.
-        """
-        roots = []
-        npm_target = Path.home() / ".npm/_npx"
-        if npm_target.is_dir():
-            roots.extend(npm_target.glob("*/node_modules/ccusage/src/cli.js"))
-        bun_target = Path.home() / ".bun/install/cache"
-        if bun_target.is_dir():
-            roots.extend(bun_target.glob("ccusage*/src/cli.js"))
-        scored = [(v, p) for p in roots if (v := _pkg_version(p)) is not None]
-        return str(max(scored)[1]) if scored else None
-
     explicit = _CCUSAGE_PATH_OVERRIDE
     if explicit:
         return [explicit]
     p = shutil.which("ccusage")
     if p:
         return [p]
-    cli = _npx_cached_cli()
-    if cli:
-        return [_node(), str(cli)]
-    return ["npx", "--yes", "ccusage@latest"]
+    return ["npx", "--yes", "ccusage"]
 
 
 _CCUSAGE_PATH_OVERRIDE: str | None = None
-
-
-def _node() -> str:
-    import shutil as _s
-
-    n = _s.which("node") or "node"
-    return n
 
 BUDGET = 300.0  # monthly cap in USD (override via --budget or CCUSAGE_BUDGET)
 TTL = {"/api/today": 15, "/api/week": 60, "/api/month": 60, "/api/range": 120, "/api/trend": 120, "/api/sessions": 60}

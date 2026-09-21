@@ -98,9 +98,8 @@ server.py  (Python stdlib, zero deps)
 ccusage   (your installed version — the real cost engine)
 ```
 
-- `lib/server.py` — Python stdlib HTTP server. Resolves a local ccusage
-  (PATH → npx cache → `npx ccusage@latest`), picking the highest real version so it
-  always matches the system's `ccusage`; warms caches on boot (~3s), then serves instant responses.
+- `lib/server.py` — Python stdlib HTTP server. Resolves ccusage the same way you run
+  it (PATH → `npx ccusage`), so it always uses the system's version; warms caches on boot (~3s), then serves instant responses.
 - `lib/index.html` — single-file dashboard. No build step, no CDN.
 - `bin/ccusage-ui.js` — Node launcher (finds python3, starts server, prints URL).
 
