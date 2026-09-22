@@ -25,7 +25,8 @@
     "token-usage"
   ],
   "scripts": {
-    "start": "node bin/ccusage-ui.js"
+    "start": "node bin/ccusage-ui.js",
+    "test": "python3 -m unittest discover -s tests"
   },
   "repository": {
     "type": "git",

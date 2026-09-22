@@ -28,6 +28,10 @@ token usage & cost from local data — accurate, but terminal-only and hard to *
 custom-range cost grouped by model, a 30-day cost trend, and a monthly budget alert.
 It auto-refreshes while you work, so you can *see* spend happen instead of running reports.
 
+Only the view you're looking at is polled: **Today** (the default) refreshes every 60s;
+**Week / Month / Custom Range** refresh every 10 minutes. Leaving the dashboard on Today
+never re-scans the longer periods in the background.
+
 Because it shells out to `ccusage` for every number, **cost estimates are always identical
 to what ccusage itself reports** — the source you already trust.
 
@@ -74,7 +78,8 @@ launcher exits and the server keeps running, so you can close the terminal. Use
 | **Budget alert** | monthly cap (default $300) — green <80%, yellow <100%, red ≥100% |
 
 All costs in USD. **Cache hit rate** is the standard input-side metric:
-`cacheReadTokens / (cacheReadTokens + non-cached inputTokens)`. Auto-refresh every 15s.
+`cacheReadTokens / (cacheReadTokens + non-cached inputTokens)`. Auto-refresh every 60s on the
+default Today view (10 min for the other views; budget + trend 10 min).
 
 ## Update check (opt-out, purely manual)
 
@@ -90,16 +95,19 @@ automatically, ever. Disable even this with `--no-update-check` or
 
 ```
 Browser (index.html)
-   │  fetch /api/...  (auto-refresh)
+   │  fetch /api/...  (polls only the ACTIVE view: today 60s, week/month/range 10min)
    ▼
 server.py  (Python stdlib, zero deps)
-   │  spawns:  ccusage daily/monthly/weekly ... --json --offline
+   │  spawns:  ccusage daily/monthly/weekly/session ... --json --offline
    ▼
 ccusage   (your installed version — the real cost engine)
 ```
 
 - `lib/server.py` — Python stdlib HTTP server. Resolves ccusage the same way you run
-  it (PATH → `npx ccusage`), so it always uses the system's version; warms caches on boot (~3s), then serves instant responses.
+  it (PATH → `npx ccusage`), so it always uses the system's version. Warms the reports the
+  first page load needs, then serves cached JSON: same-key requests coalesce onto one run
+  (single-flight), and a small semaphore keeps different keys from stacking full-history
+  scans on top of each other.
 - `lib/index.html` — single-file dashboard. No build step, no CDN.
 - `bin/ccusage-ui.js` — Node launcher (finds python3, starts server, prints URL).
 

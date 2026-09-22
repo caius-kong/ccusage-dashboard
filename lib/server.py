@@ -40,6 +40,18 @@ APP_DIR = Path(__file__).resolve().parent
 # Cache: args-key -> (expires_at, data)
 _cache: dict[str, tuple[float, object]] = {}
 _lock = threading.Lock()
+# key -> Event set when the in-flight run for that key finishes (single-flight)
+_inflight: dict[str, threading.Event] = {}
+
+# Every report scans the full local session history, so N concurrent runs burn N
+# cores to compute an answer. Same-key requests coalesce onto a single run (see
+# run_ccusage); this gate additionally keeps DIFFERENT keys from stacking. It is
+# deliberately small rather than 1: with per-endpoint TTLs (below) a steady-state
+# tick has at most one miss, so the gate is only touched when warm-up or a slow
+# endpoint's expiry collides with the default view's refresh. 2 bounds that
+# collision without letting it re-stack into the multi-core spikes this repo had.
+_MAX_CONCURRENT_RUNS = 2
+_run_gate = threading.Semaphore(_MAX_CONCURRENT_RUNS)
 
 
 def resolve_ccusage() -> list[str]:
@@ -63,7 +75,33 @@ def resolve_ccusage() -> list[str]:
 _CCUSAGE_PATH_OVERRIDE: str | None = None
 
 BUDGET = 300.0  # monthly cap in USD (override via --budget or CCUSAGE_BUDGET)
-TTL = {"/api/today": 15, "/api/week": 60, "/api/month": 60, "/api/range": 120, "/api/trend": 120, "/api/sessions": 60}
+
+# Refresh cadence is driven by the browser (lib/index.html), which polls the
+# ACTIVE view only. Only the default Today view needs re-scanning every minute;
+# the heavier reports cost ~12-16 CPU-seconds each and are rarely watched, so
+# they re-scan a tenth as often. Inactive views are never polled at all.
+#
+# A value here is the refresh PERIOD, not a from-now duration: an entry is valid
+# until the end of its period (see run_ccusage), so a request at the next period
+# boundary always finds it stale and triggers exactly one fresh scan. That makes
+# the refresh cadence independent of how long a scan happens to take — with a
+# plain "now + ttl", a scan finishing `runtime` after the tick would keep the
+# entry alive past the next tick and silently halve the refresh rate.
+_REFRESH_INTERVAL = 60   # browser poll interval; must match lib/index.html
+_SLOW_INTERVAL = 600     # cadence for the non-default views
+TTL = {
+    "/api/today": _REFRESH_INTERVAL,   # default view: re-scanned every minute
+    "/api/week": _SLOW_INTERVAL,
+    "/api/month": _SLOW_INTERVAL,
+    "/api/range": _SLOW_INTERVAL,
+    "/api/trend": _SLOW_INTERVAL,
+    "/api/sessions": _SLOW_INTERVAL,   # the today view overrides this (see sessions())
+}
+
+# A transient failure is remembered only briefly: long enough that concurrent
+# waiters share it instead of each retrying, short enough that the endpoint
+# recovers quickly rather than staying broken for a whole TTL.
+_ERROR_TTL = 30
 
 # --- optional self-update check (purely user-triggered) ----------------------
 # The dashboard is otherwise fully offline: it makes a network request ONLY when
@@ -80,25 +118,63 @@ _last_check = None  # (timestamp, result dict) — debounce + last outcome
 
 
 def run_ccusage(args: list[str], ttl: float) -> dict:
+    """Run ccusage and cache the JSON report under its argv for one `ttl` window.
+
+    ``ttl`` is a refresh PERIOD, and an entry stays valid until that window ends
+    (`expires_at` is the next `ttl` boundary, not `now + ttl`). Stamping a
+    from-now duration instead would make the effective cadence `runtime + ttl`,
+    i.e. a scan that finishes 12s after a 60s tick would keep its entry alive
+    past the next tick and halve the refresh rate.
+
+    The boundary is anchored to when the scan STARTS, so successive windows tile
+    the clock exactly: a request at the next period boundary always finds the
+    entry stale and triggers one fresh scan, no matter how long the scan took.
+
+    Requests for the same key are coalesced (single-flight): the first caller
+    runs ccusage and the rest wait for its result, so N concurrent misses spawn
+    1 subprocess. A global semaphore additionally caps concurrent ccusage
+    processes at _MAX_CONCURRENT_RUNS across all keys, so warm-up and browser
+    polls cannot stack heavy scans on top of each other.
+    """
     key = " ".join(args)
-    now = time.time()
-    with _lock:
-        hit = _cache.get(key)
-        if hit and hit[0] > now:
-            return hit[1]  # type: ignore[return-value]
+    while True:
+        now = time.time()
+        with _lock:
+            hit = _cache.get(key)
+            if hit and hit[0] > now:
+                return hit[1]  # type: ignore[return-value]
+            waiter = _inflight.get(key)
+            if waiter is None:
+                waiter = threading.Event()
+                _inflight[key] = waiter
+                break
+        waiter.wait()  # someone else is already running this exact key
     try:
-        proc = subprocess.run(
-            resolve_ccusage() + args,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        data = json.loads(proc.stdout)
-    except Exception as exc:  # noqa: BLE001
-        data = {"error": f"{exc}"}
-    with _lock:
-        _cache[key] = (now + ttl, data)
-    return data
+        with _run_gate:
+            started = time.time()
+            try:
+                proc = subprocess.run(
+                    resolve_ccusage() + args,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                data = json.loads(proc.stdout)
+            except Exception as exc:  # noqa: BLE001
+                data = {"error": f"{exc}"}
+        is_error = isinstance(data, dict) and bool(data.get("error"))
+        window = _ERROR_TTL if is_error else ttl
+        # Expire at the end of the window the scan STARTED in, so windows tile the
+        # clock and the next request triggers exactly one fresh scan.
+        expires_at = (int(started / window) + 1) * window
+        with _lock:
+            _cache[key] = (expires_at, data)
+        return data
+    finally:
+        with _lock:
+            done = _inflight.pop(key, None)
+        if done is not None:
+            done.set()
 
 
 def _read_current_version() -> str | None:
@@ -286,7 +362,12 @@ def sessions(since_days: int = 30, period: str = "", from_date: str = "", to_dat
     ccusage_args = ["session", "--json", "--offline"]
     if lo and hi:
         ccusage_args += ["--since", lo.isoformat(), "--until", hi.isoformat()]
-    data = run_ccusage(ccusage_args, TTL["/api/sessions"])
+    # The sessions panel follows the active view, so its cache lifetime must
+    # match that view's cadence: the today view is polled every minute, the
+    # others every _SLOW_INTERVAL. Using the slow TTL for a today window would
+    # keep the panel a minute stale behind its own refresh.
+    sessions_ttl = TTL["/api/today"] if period == "today" else TTL["/api/sessions"]
+    data = run_ccusage(ccusage_args, sessions_ttl)
     rows = data.get("session") or []
 
     out = []
@@ -603,24 +684,30 @@ def main() -> None:
         UPDATE_CHECKS = False
     print(f"using ccusage → {' '.join(resolve_ccusage())}", flush=True)
 
-    def warm_one(fn):
-        fn()
-
     def warm():
-        threads = [
-            threading.Thread(target=warm_one, args=(lambda: run_ccusage(["daily", "--last", "1", "--json", "--offline"], TTL["/api/today"]),)),
-            threading.Thread(target=warm_one, args=(lambda: run_ccusage(["weekly", "--last", "1", "--json", "--offline"], TTL["/api/week"]),)),
-            threading.Thread(target=warm_one, args=(lambda: run_ccusage(["monthly", "--last", "1", "--json", "--offline"], TTL["/api/month"]),)),
-            threading.Thread(target=warm_one, args=(lambda: run_ccusage(["session", "--by-agent", "--json", "--offline"], TTL["/api/sessions"]),)),
-            threading.Thread(target=warm_one, args=(lambda: trend(30),)),
+        # Fire concurrently and let _run_gate bound how many actually run at once;
+        # serializing here would make a cold start pay for all the scans
+        # back-to-back for no benefit.
+        #
+        # Only reports the browser asks for on load are pre-warmed: the default
+        # view (today), the two always-visible panels (budget=month, 30-day
+        # trend). week/range are omitted on purpose — the UI only fetches them
+        # when the user switches to that tab, so warming them would be a wasted
+        # full-history scan at every boot.
+        jobs = [
+            lambda: run_ccusage(["daily", "--last", "1", "--json", "--offline"], TTL["/api/today"]),
+            lambda: run_ccusage(["monthly", "--last", "1", "--json", "--offline"], TTL["/api/month"]),
+            lambda: trend(30),
         ]
+        threads = [threading.Thread(target=job) for job in jobs]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
 
     # warm the caches in the background so the server is reachable immediately;
-    # the first page load will wait for warm-up to finish via the TTL cache lock.
+    # a page load arriving mid-warm-up joins the matching in-flight run (see
+    # single-flight in run_ccusage) instead of starting a duplicate scan.
     if not args.no_warm:
         print("warming ccusage caches in background…", flush=True)
         threading.Thread(target=warm, daemon=True).start()

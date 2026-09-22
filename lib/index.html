@@ -131,7 +131,7 @@
   <div id="sessionsList"><div class="empty">loading…</div></div>
 </div>
 
-<div class="hint">auto-refresh 15s · costs in USD · <span id="lastUpd"></span></div>
+<div class="hint">auto-refresh 60s · costs in USD · <span id="lastUpd"></span></div>
 
 <div class="modal-mask" id="updModal" style="display:none">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="updTitle">
@@ -324,11 +324,12 @@ function applyCardsRange(data){
   renderModels(data);
 }
 
-async function loadModels(){
+async function loadModels(monthData){
   let ep,data;
   if(active==="today"){ep="/api/today";data=await (await fetch(ep)).json();}
   else if(active==="week"){data=await (await fetch("/api/week")).json();}
-  else if(active==="month"){data=await (await fetch("/api/month")).json();applyBudget(data);}
+  // monthData is the response tick()/the budget poll already fetched.
+  else if(active==="month"){data=monthData||await fetchMonth();applyBudget(data);}
   else{return;} // handled by rangeApply
   if(data.error)throw new Error(data.error);
   applyCards(data);
@@ -397,18 +398,50 @@ function drawTrend(days){
   };
 }
 
-async function tick(){
+// The dashboard polls only the view the user is actually looking at.
+//   today (the default)  -> every 60s   — this is the view people watch live
+//   week / month / range -> every 600s  — switching to one is a deliberate act
+//   budget pill + 30-day trend (always visible) -> every 600s
+// Inactive views are never fetched in the background: leaving the tab on "today"
+// does not keep re-scanning monthly/weekly data, which used to cost a full
+// ccusage run each.
+const VIEW_MS={today:60000, week:600000, month:600000, range:600000};
+const AUX_MS=600000;
+let viewTimer=null;
+
+async function fetchMonth(){
+  const d=await(await fetch("/api/month")).json();
+  if(d.error)throw new Error(d.error);
+  return d;
+}
+
+async function tick(){                 // the active view + the sessions panel
   const dot=$("dot"),st=$("status");
   try{
-    const month=await(await fetch("/api/month")).json();
-    if(month.error)throw new Error(month.error);
-    applyBudget(month);
-    await loadModels();
-    await loadTrend();
+    if(active==="range")await rangeApply();
+    else await loadModels();
     await loadSessions();
     dot.className="dot ok";st.textContent="live";
     $("lastUpd").textContent="last updated "+new Date().toLocaleTimeString();
   }catch(e){dot.className="dot err";st.textContent="error: "+e.message;}
+}
+
+async function auxTick(){              // always-visible panels: budget + 30d trend
+  try{
+    applyBudget(await fetchMonth());
+    await loadTrend();
+  }catch(e){/* status is reported by tick() */}
+}
+
+// The poll rate follows the active view, so switching tabs re-arms the timer.
+function scheduleViewPoll(){
+  if(viewTimer)clearInterval(viewTimer);
+  viewTimer=setInterval(tick, VIEW_MS[active]||60000);
+}
+
+function refreshView(){
+  scheduleViewPoll();
+  tick();
 }
 
 document.querySelectorAll(".tab").forEach(t=>{
@@ -425,6 +458,7 @@ document.querySelectorAll(".tab").forEach(t=>{
       loadModels();
     }
     loadSessions();
+    scheduleViewPoll();   // the new view gets its own cadence
   };
   t.addEventListener("click",activate);
   t.addEventListener("keydown",(e)=>{if(e.key==="Enter"||e.key===" "||e.key==="Spacebar"){e.preventDefault();activate();}});
@@ -434,8 +468,9 @@ $("updBtn").addEventListener("click",checkUpdate);
 $("updOk").addEventListener("click",hideUpdModal);
 $("updModal").addEventListener("click",(e)=>{if(e.target.id==="updModal")hideUpdModal();});
 
-tick();
-setInterval(tick,15000);
+refreshView();            // active view (own cadence) + sessions; re-arms per view
+auxTick();                // budget pill + 30-day trend (slow cadence)
+setInterval(auxTick, AUX_MS);
 window.addEventListener("resize",()=>{if($("trendChart").width)loadTrend();});
 </script>
 </body>
