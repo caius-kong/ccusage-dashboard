@@ -81,12 +81,9 @@ BUDGET = 300.0  # monthly cap in USD (override via --budget or CCUSAGE_BUDGET)
 # the heavier reports cost ~12-16 CPU-seconds each and are rarely watched, so
 # they re-scan a tenth as often. Inactive views are never polled at all.
 #
-# A value here is the refresh PERIOD, not a from-now duration: an entry is valid
-# until the end of its period (see run_ccusage), so a request at the next period
-# boundary always finds it stale and triggers exactly one fresh scan. That makes
-# the refresh cadence independent of how long a scan happens to take — with a
-# plain "now + ttl", a scan finishing `runtime` after the tick would keep the
-# entry alive past the next tick and silently halve the refresh rate.
+# A value here is the refresh PERIOD, not a length of time an entry is kept.
+# run_ccusage expires entries slightly before their period elapses, so each new
+# period triggers exactly one fresh scan regardless of how long a scan takes.
 _REFRESH_INTERVAL = 60   # browser poll interval; must match lib/index.html
 _SLOW_INTERVAL = 600     # cadence for the non-default views
 TTL = {
@@ -100,8 +97,15 @@ TTL = {
 
 # A transient failure is remembered only briefly: long enough that concurrent
 # waiters share it instead of each retrying, short enough that the endpoint
-# recovers quickly rather than staying broken for a whole TTL.
+# recovers quickly rather than staying whole a full period.
 _ERROR_TTL = 30
+
+# Entries expire this many seconds before their period ends, so the next poll of
+# the same cadence always triggers a fresh scan. Expiry is measured from the
+# REQUEST, so it does not care when the scan started; the margin only has to
+# cover the gap between a poll and the entry it replaces. Must stay well below
+# the smallest period.
+_EXPIRY_MARGIN = 5
 
 # --- optional self-update check (purely user-triggered) ----------------------
 # The dashboard is otherwise fully offline: it makes a network request ONLY when
@@ -120,15 +124,22 @@ _last_check = None  # (timestamp, result dict) — debounce + last outcome
 def run_ccusage(args: list[str], ttl: float) -> dict:
     """Run ccusage and cache the JSON report under its argv for one `ttl` window.
 
-    ``ttl`` is a refresh PERIOD, and an entry stays valid until that window ends
-    (`expires_at` is the next `ttl` boundary, not `now + ttl`). Stamping a
-    from-now duration instead would make the effective cadence `runtime + ttl`,
-    i.e. a scan that finishes 12s after a 60s tick would keep its entry alive
-    past the next tick and halve the refresh rate.
+    ``ttl`` here is a refresh PERIOD (the cadence the browser polls this report
+    at), and the entry is made to expire just before that period elapses — see
+    _EXPIRY_MARGIN. Expiry is measured from the REQUEST time (the tick), not from
+    when the scan happened to start, so queueing behind other scans cannot push
+    an entry past the next tick and silently double the cadence.
 
-    The boundary is anchored to when the scan STARTS, so successive windows tile
-    the clock exactly: a request at the next period boundary always finds the
-    entry stale and triggers one fresh scan, no matter how long the scan took.
+    Two failure modes this avoids:
+
+    * Stamping the pre-run clock gave an entry a lifetime of `ttl - runtime`,
+      i.e. negative when a run outlasted its period, so the cache never hit and
+      every poll re-executed ccusage.
+    * Anchoring to the wall clock ("end of the current minute") expires an entry
+      on write whenever a run starts near a boundary.
+
+    Post-condition for any run shorter than `ttl - _EXPIRY_MARGIN`: the entry is
+    valid now, and stale by the next poll of the same cadence.
 
     Requests for the same key are coalesced (single-flight): the first caller
     runs ccusage and the rest wait for its result, so N concurrent misses spawn
@@ -147,11 +158,11 @@ def run_ccusage(args: list[str], ttl: float) -> dict:
             if waiter is None:
                 waiter = threading.Event()
                 _inflight[key] = waiter
+                requested_at = now
                 break
         waiter.wait()  # someone else is already running this exact key
     try:
         with _run_gate:
-            started = time.time()
             try:
                 proc = subprocess.run(
                     resolve_ccusage() + args,
@@ -164,9 +175,11 @@ def run_ccusage(args: list[str], ttl: float) -> dict:
                 data = {"error": f"{exc}"}
         is_error = isinstance(data, dict) and bool(data.get("error"))
         window = _ERROR_TTL if is_error else ttl
-        # Expire at the end of the window the scan STARTED in, so windows tile the
-        # clock and the next request triggers exactly one fresh scan.
-        expires_at = (int(started / window) + 1) * window
+        # Expire just before this period ends, measured from the REQUEST, so the
+        # next poll of this cadence always finds it stale even if the scan was
+        # queued behind others. Never let the margin swallow a short window.
+        margin = min(_EXPIRY_MARGIN, window / 4)
+        expires_at = requested_at + window - margin
         with _lock:
             _cache[key] = (expires_at, data)
         return data

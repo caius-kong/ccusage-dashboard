@@ -346,10 +346,9 @@ async function rangeApply(){
 }
 
 async function loadTrend(){
-  const d=await(await fetch("/api/trend?days=30")).json();
-  if(d.error){return;}
-  drawTrend(d.days||[]);
-  $("trendSum").textContent=fmtUsd((d.days||[]).reduce((a,x)=>a+(x.totalCost||0),0));
+  // Used by the resize redraw and first paint; a failed trend must not surface
+  // as an unhandled rejection (auxTick reports status via the tick() indicator).
+  try{renderTrend(await fetchTrend());}catch(e){}
 }
 
 function drawTrend(days){
@@ -415,12 +414,30 @@ async function fetchMonth(){
   return d;
 }
 
+async function fetchTrend(){
+  const d=await(await fetch("/api/trend?days=30")).json();
+  if(d.error)throw new Error(d.error);
+  return d;
+}
+
+function renderTrend(d){
+  drawTrend(d.days||[]);
+  $("trendSum").textContent=fmtUsd((d.days||[]).reduce((a,x)=>a+(x.totalCost||0),0));
+}
+
 async function tick(){                 // the active view + the sessions panel
   const dot=$("dot"),st=$("status");
   try{
-    if(active==="range")await rangeApply();
-    else await loadModels();
-    await loadSessions();
+    // These two hit independent endpoints with independent caches and render
+    // into different panels, so run them together. Awaiting one before starting
+    // the other would make a cold tick cost `today + sessions` worth of scans
+    // (~13-24s each) — close enough to the 60s refresh window to risk the next
+    // tick arriving before this one finishes. The server's run gate is sized for
+    // exactly this small overlap.
+    await Promise.all([
+      active==="range"?rangeApply():loadModels(),
+      loadSessions(),
+    ]);
     dot.className="dot ok";st.textContent="live";
     $("lastUpd").textContent="last updated "+new Date().toLocaleTimeString();
   }catch(e){dot.className="dot err";st.textContent="error: "+e.message;}
@@ -428,8 +445,10 @@ async function tick(){                 // the active view + the sessions panel
 
 async function auxTick(){              // always-visible panels: budget + 30d trend
   try{
-    applyBudget(await fetchMonth());
-    await loadTrend();
+    // Independent endpoints again: fetch both, then render.
+    const [month,trend]=await Promise.all([fetchMonth(), fetchTrend()]);
+    applyBudget(month);
+    renderTrend(trend);
   }catch(e){/* status is reported by tick() */}
 }
 

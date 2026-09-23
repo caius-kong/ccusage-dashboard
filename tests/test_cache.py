@@ -74,14 +74,74 @@ class CacheTest(unittest.TestCase):
         server._cache.clear()
         server._inflight.clear()
 
-    def test_expiry_is_window_boundary_not_now_plus_ttl(self) -> None:
-        """Expiry must land on the period boundary, not `now + ttl`.
+    def test_expiry_never_precedes_completion(self) -> None:
+        """An entry must never be expired at the moment it is written.
 
-        The old code stored `(pre_run_now + ttl, data)`, which gave an entry a
-        real lifetime of `ttl - runtime` (negative when a run outlasted its TTL)
-        so the cache never hit. A plain `completion + ttl` fixes that but makes
-        the effective cadence `runtime + ttl`, halving the refresh rate; the
-        entry must expire at the end of its window instead.
+        This is the original defect, and it is easy to reintroduce: a wall-clock
+        aligned window ("end of the current minute") expires on write whenever a
+        run starts near a boundary. Simulate completion without real sleeping.
+        """
+        ttl = 60.0
+        runtime = 12.0
+        for phase in (0.0, 5.0, 30.0, 57.0, 59.5, 59.99):
+            with self.subTest(phase=phase):
+                request_at = 1000.0 + phase
+                stub = StubCcusage(runtime=0.0)
+                server.subprocess.run = stub
+                server._cache.clear()
+                server._inflight.clear()
+                real_time = time.time
+                stamps = [request_at, request_at + runtime]
+                time.time = lambda: stamps.pop(0) if len(stamps) > 1 else stamps[0]  # type: ignore[assignment]
+                try:
+                    server.run_ccusage(["daily", "--last", "1"], ttl=ttl)
+                    expires_at = server._cache["daily --last 1"][0]
+                    self.assertGreater(
+                        expires_at,
+                        request_at + runtime,
+                        f"entry expired {(request_at + runtime - expires_at):.1f}s BEFORE the run finished",
+                    )
+                finally:
+                    time.time = real_time  # type: ignore[assignment]
+
+    def test_cadence_is_exactly_one_scan_per_period(self) -> None:
+        """An entry must be stale by the next poll of the same cadence, even when
+        the scan was delayed before starting (queued behind other scans).
+
+        If the entry outlives the next tick the real cadence silently becomes
+        `period + delay` (e.g. 120s instead of 60s), which is why expiry is
+        measured from the request rather than from when the scan started.
+        """
+        ttl = 60.0
+        runtime = 12.0
+        for start_delay in (0.0, 0.5, 3.0, 7.0, 20.0):
+            with self.subTest(start_delay=start_delay):
+                tick = 1000.0
+                stub = StubCcusage(runtime=0.0)
+                server.subprocess.run = stub
+                server._cache.clear()
+                server._inflight.clear()
+                real_time = time.time
+                stamps = [tick, tick + start_delay + runtime]
+                time.time = lambda: stamps.pop(0) if len(stamps) > 1 else stamps[0]  # type: ignore[assignment]
+                try:
+                    server.run_ccusage(["daily", "--last", "1"], ttl=ttl)
+                    expires_at = server._cache["daily --last 1"][0]
+                    next_tick = tick + ttl
+                    self.assertLess(
+                        expires_at,
+                        next_tick,
+                        f"entry valid {expires_at - next_tick:.1f}s past the next tick -> cadence exceeds {ttl}s",
+                    )
+                    self.assertGreater(expires_at, tick + start_delay + runtime)
+                finally:
+                    time.time = real_time  # type: ignore[assignment]
+
+    def test_expiry_is_window_boundary_not_now_plus_ttl(self) -> None:
+        """Expiry must track the period, not `now + ttl` from the request time.
+
+        The original code used the PRE-run clock, giving a lifetime of
+        `ttl - runtime`; expiry must instead be measured from the scan's start.
         """
         stub = StubCcusage(runtime=0.2)
         server.subprocess.run = stub
@@ -95,12 +155,12 @@ class CacheTest(unittest.TestCase):
         self.assertGreater(remaining, 0)
 
     def test_ttl_shorter_than_runtime_still_caches(self) -> None:
-        """With window-boundary expiry a ttl below the runtime can still serve
-        at least the calls inside the same window (the original bug: it could not)."""
+        """A ttl below the runtime must still serve calls, not expire on write
+        (the original bug: the entry was dead the moment it was stored)."""
         stub = StubCcusage(runtime=0.2)
         server.subprocess.run = stub
-        server.run_ccusage(["daily", "--last", "1"], ttl=10**9)  # far-future boundary
-        server.run_ccusage(["daily", "--last", "1"], ttl=10**9)
+        server.run_ccusage(["daily", "--last", "1"], ttl=1.0)
+        server.run_ccusage(["daily", "--last", "1"], ttl=1.0)
         self.assertEqual(stub.spawns, 1)
 
     def test_cache_outlives_one_poll_interval(self) -> None:
