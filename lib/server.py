@@ -101,10 +101,11 @@ TTL = {
 _ERROR_TTL = 30
 
 # Entries expire this many seconds before their period ends, so the next poll of
-# the same cadence always triggers a fresh scan. Expiry is measured from the
-# REQUEST, so it does not care when the scan started; the margin only has to
-# cover the gap between a poll and the entry it replaces. Must stay well below
-# the smallest period.
+# the same cadence always triggers a fresh scan. Measured from the REQUEST, so it
+# does not care when the scan started. The entry stays valid for
+# `period - _EXPIRY_MARGIN` seconds, which must exceed the total time until a
+# scan's data exists (queueing delay + runtime) or the entry would expire on
+# write — keep the margin small and the period comfortably above one scan.
 _EXPIRY_MARGIN = 5
 
 # --- optional self-update check (purely user-triggered) ----------------------
@@ -703,14 +704,18 @@ def main() -> None:
         # back-to-back for no benefit.
         #
         # Only reports the browser asks for on load are pre-warmed: the default
-        # view (today), the two always-visible panels (budget=month, 30-day
-        # trend). week/range are omitted on purpose — the UI only fetches them
-        # when the user switches to that tab, so warming them would be a wasted
+        # view (today), the always-visible panels (budget=month, 30-day trend)
+        # and the sessions list, which the first tick also requests. Pre-warming
+        # sessions matters: otherwise it queues behind the other three cold scans,
+        # and a queued run can finish too late to serve the next tick.
+        # week/range are omitted on purpose — the UI only fetches them when the
+        # user switches to that tab, so warming them would be a wasted
         # full-history scan at every boot.
         jobs = [
             lambda: run_ccusage(["daily", "--last", "1", "--json", "--offline"], TTL["/api/today"]),
             lambda: run_ccusage(["monthly", "--last", "1", "--json", "--offline"], TTL["/api/month"]),
             lambda: trend(30),
+            lambda: sessions(period="today"),
         ]
         threads = [threading.Thread(target=job) for job in jobs]
         for t in threads:

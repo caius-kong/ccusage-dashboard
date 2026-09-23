@@ -137,6 +137,29 @@ class CacheTest(unittest.TestCase):
                 finally:
                     time.time = real_time  # type: ignore[assignment]
 
+    def test_sessions_uses_the_active_view_ttl(self) -> None:
+        """The sessions panel is polled with the active view, so its cache period
+        must match that view — otherwise a today window is served stale behind a
+        60s refresh, or re-scanned when it did not need to be."""
+        seen: list[float] = []
+        stub = StubCcusage(runtime=0.0)
+        server.subprocess.run = stub
+        real = server.run_ccusage
+
+        def spy(args, ttl):
+            seen.append(ttl)
+            return real(args, ttl)
+
+        server.run_ccusage = spy  # type: ignore[assignment]
+        try:
+            server.sessions(period="today")
+            self.assertEqual(seen[-1], server.TTL["/api/today"])
+            server.sessions(period="week")
+            self.assertEqual(seen[-1], server.TTL["/api/sessions"])
+            self.assertGreater(server.TTL["/api/sessions"], server.TTL["/api/today"])
+        finally:
+            server.run_ccusage = real  # type: ignore[assignment]
+
     def test_expiry_is_window_boundary_not_now_plus_ttl(self) -> None:
         """Expiry must track the period, not `now + ttl` from the request time.
 
