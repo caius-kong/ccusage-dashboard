@@ -86,13 +86,76 @@ function daemonAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-function isServerUp() {
+function getServerHealth() {
   return new Promise((resolve) => {
     const req = http.get(url + '/api/health', { timeout: 1200 }, (res) => {
-      resolve(res.statusCode === 200);
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          resolve(res.statusCode === 200 && data.ok ? data : null);
+        } catch {
+          resolve(null);
+        }
+      });
     });
-    req.on('error', () => resolve(false));
+    req.on('error', () => resolve(null));
   });
+}
+
+async function isServerUp() {
+  return Boolean(await getServerHealth());
+}
+
+function managedServerPid() {
+  const candidates = new Set([readDaemonPid()]);
+  const listening = spawnSync('lsof', ['-tiTCP:' + port, '-sTCP:LISTEN', '-n', '-P'], { encoding: 'utf8' });
+  if (listening.status === 0) {
+    for (const value of listening.stdout.split(/\s+/)) candidates.add(parseInt(value, 10));
+  }
+  for (const pid of candidates) {
+    if (!pid || !daemonAlive(pid)) continue;
+    const result = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+    if (result.status !== 0 || !result.stdout.includes(`${path.sep}ccusage-dashboard${path.sep}lib${path.sep}server.py`)) continue;
+    const hasPortArg = /(?:^|\s)--port(?:=|\s+)/.test(result.stdout);
+    const matchesPort = new RegExp(`(?:^|\\s)--port(?:=|\\s+)${port}(?:\\s|$)`).test(result.stdout);
+    if (matchesPort || (port === 8799 && !hasPortArg)) return pid;
+  }
+  return null;
+}
+
+async function stopServer(pid) {
+  try { process.kill(pid, 'SIGTERM'); } catch { return false; }
+  const start = Date.now();
+  while (Date.now() - start < 5000) {
+    if (!await isServerUp()) {
+      try { fs.unlinkSync(pidFile()); } catch {}
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return false;
+}
+
+function readCurrentVersion() {
+  try {
+    const pkg = path.join(__dirname, '..', 'package.json');
+    return JSON.parse(fs.readFileSync(pkg, 'utf8')).version || null;
+  } catch { return null; }
+}
+
+function compareVersions(a, b) {
+  const parts = (value) => value.replace(/^v/, '').split('.').map((part) => parseInt(part, 10) || 0);
+  const left = parts(a);
+  const right = parts(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    const x = left[i] || 0;
+    const y = right[i] || 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
 }
 
 function printBanner() {
@@ -142,11 +205,30 @@ if (wantStop) {
 
 // --- daemon mode ------------------------------------------------------------
 async function handleDaemon() {
-  // Reuse an already-running instance on this port.
-  if (await isServerUp()) {
-    console.log(`A dashboard is already running at ${url} — reusing it.`);
-    printBanner();
-    process.exit(0);
+  // Replace an older dashboard daemon so running the latest package deploys it.
+  const health = await getServerHealth();
+  if (health) {
+    const current = readCurrentVersion();
+    const older = current && (!health.version || compareVersions(health.version, current) < 0);
+    if (older) {
+      const pid = managedServerPid();
+      if (pid) {
+        console.log(`Stopping older dashboard v${health.version || 'unknown'} (pid ${pid}) …`);
+        if (!await stopServer(pid)) {
+          console.error(`[ccusage-dashboard] could not stop the old server on ${url}; stop it manually and retry.`);
+          process.exit(1);
+        }
+      } else {
+        console.log(`A dashboard is already running at ${url}, but it cannot be safely replaced automatically.`);
+        console.log('Stop the existing server manually, then rerun this command to deploy the latest version.');
+        printBanner();
+        process.exit(0);
+      }
+    } else {
+      console.log(`A dashboard is already running at ${url} — reusing it.`);
+      printBanner();
+      process.exit(0);
+    }
   }
   // If the pid file points at a dead pid, clear it.
   const oldPid = readDaemonPid();

@@ -641,7 +641,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, (APP_DIR / "index.html").read_bytes(), "text/html; charset=utf-8")
             return
         if path == "/api/health":
-            self._json({"ok": True, "budget": BUDGET})
+            self._json({"ok": True, "version": _read_current_version(), "budget": BUDGET})
             return
         if path == "/api/update":
             self._json(check_now())
