@@ -171,7 +171,11 @@ def run_ccusage(args: list[str], ttl: float) -> dict:
                     text=True,
                     timeout=120,
                 )
-                data = json.loads(proc.stdout)
+                if proc.returncode != 0:
+                    detail = proc.stderr.strip() or proc.stdout.strip() or "no output"
+                    data = {"error": f"ccusage exited with status {proc.returncode}: {detail}"}
+                else:
+                    data = json.loads(proc.stdout)
             except Exception as exc:  # noqa: BLE001
                 data = {"error": f"{exc}"}
         is_error = isinstance(data, dict) and bool(data.get("error"))

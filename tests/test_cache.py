@@ -30,10 +30,10 @@ import server  # noqa: E402
 
 
 class FakeProc:
-    def __init__(self, stdout: str) -> None:
+    def __init__(self, stdout: str, stderr: str = "", returncode: int = 0) -> None:
         self.stdout = stdout
-        self.stderr = ""
-        self.returncode = 0
+        self.stderr = stderr
+        self.returncode = returncode
 
 
 class StubCcusage:
@@ -238,6 +238,18 @@ class CacheTest(unittest.TestCase):
             stub.peak,
             server._MAX_CONCURRENT_RUNS,
             "concurrent ccusage processes must respect the global gate",
+        )
+
+    def test_nonzero_cli_exit_preserves_stderr_in_error(self) -> None:
+        server.subprocess.run = lambda *args, **kwargs: FakeProc(
+            "", stderr="ccusage native binary is not available for darwin-arm64.", returncode=1
+        )
+
+        result = server.run_ccusage(["daily", "--last", "1"], ttl=300)
+
+        self.assertEqual(
+            result.get("error"),
+            "ccusage exited with status 1: ccusage native binary is not available for darwin-arm64.",
         )
 
     def test_errors_are_not_cached_for_the_full_ttl(self) -> None:
