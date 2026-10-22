@@ -38,6 +38,40 @@ class HealthHandler(BaseHTTPRequestHandler):
         pass
 
 
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def write_unmanaged_server(root: Path, port: int) -> Path:
+    """A dashboard server started outside the launcher: no pid file, real port."""
+    script = root / "ccusage-dashboard" / "lib" / "server.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        "class H(BaseHTTPRequestHandler):\n"
+        " def do_GET(self):\n"
+        "  body=b'{\\\"ok\\\":true,\\\"version\\\":\\\"0.2.22\\\"}'\n"
+        "  self.send_response(200); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)\n"
+        " def log_message(self,*args): pass\n"
+        f"HTTPServer(('127.0.0.1',{port}),H).serve_forever()\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+def wait_for_health(port: int, timeout: float = 5) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=0.2):
+                return True
+        except Exception:
+            time.sleep(0.05)
+    return False
+
+
 class LauncherTest(unittest.TestCase):
     def launch_against(self, version: str | None) -> str:
         HealthHandler.version = version
@@ -151,6 +185,71 @@ class LauncherTest(unittest.TestCase):
 
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
         self.assertEqual(health["version"], package["version"])
+
+    def test_health_reports_the_version_the_process_started_with(self) -> None:
+        """npm reifies the installed package.json in place, so a live process can
+        find a newer version on disk than the code it is running. Health must
+        report the snapshot taken at import, else the launcher believes an old
+        running server is already the new version and skips the restart."""
+        server = ThreadingHTTPServer(("127.0.0.1", 0), dashboard_server.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        original = dashboard_server._read_current_version
+        dashboard_server._read_current_version = lambda: "99.0.0"  # package.json replaced on disk
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/api/health") as response:
+                health = json.load(response)
+        finally:
+            dashboard_server._read_current_version = original
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual(health["version"], dashboard_server._RUNNING_VERSION)
+        self.assertNotEqual(health["version"], "99.0.0")
+
+    def test_stop_finds_a_server_started_without_a_pid_file(self) -> None:
+        """--stop must fall back to the listening port: an instance started outside
+        the launcher has no pid file, which used to make --stop a silent no-op."""
+        port = free_port()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script = write_unmanaged_server(Path(temp_dir), port)
+            running = subprocess.Popen(
+                [sys.executable, str(script), "--port", str(port)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            try:
+                self.assertTrue(wait_for_health(port), "fake server never came up")
+                result = subprocess.run(
+                    ["node", str(ROOT / "bin" / "ccusage-ui.js"), "--port", str(port), "--stop"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"Stopping dashboard (pid {running.pid})", result.stdout)
+                self.assertIn("Dashboard stopped.", result.stdout)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and running.poll() is None:
+                    time.sleep(0.05)
+                self.assertIsNotNone(running.poll(), "--stop must actually stop the server")
+            finally:
+                if running.poll() is None:
+                    running.kill()
+                    running.wait(timeout=2)
+
+    def test_stop_with_nothing_listening_reports_no_instance(self) -> None:
+        result = subprocess.run(
+            ["node", str(ROOT / "bin" / "ccusage-ui.js"), "--port", str(free_port()), "--stop"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("No running dashboard instance found.", result.stdout)
 
 
 if __name__ == "__main__":

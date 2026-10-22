@@ -226,6 +226,13 @@ def _read_current_version() -> str | None:
     return None
 
 
+# Snapshot taken once, at import: this process is running THOSE files. npm can
+# reify the installed package.json to a newer version underneath a live process
+# (see the launcher's upgrade path), and re-reading the disk would then report a
+# version whose code is not what is actually serving requests.
+_RUNNING_VERSION = _read_current_version()
+
+
 def _num(s: str) -> int:
     m = re.match(r"\d+", s)
     return int(m.group()) if m else 0
@@ -250,7 +257,7 @@ def _fetch_latest_version() -> str:
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": f"ccusage-dashboard/{_read_current_version() or 'unknown'}",
+            "User-Agent": f"ccusage-dashboard/{_RUNNING_VERSION or 'unknown'}",
         },
     )
     with urllib.request.urlopen(req, timeout=4) as resp:
@@ -267,7 +274,7 @@ def check_now() -> dict:
     with _update_lock:
         if _last_check and now - _last_check[0] < CHECK_DEBOUNCE:
             return _last_check[1]
-    current = _read_current_version()
+    current = _RUNNING_VERSION
     try:
         latest = _fetch_latest_version()
         result = {
@@ -657,7 +664,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, (APP_DIR / "index.html").read_bytes(), "text/html; charset=utf-8")
             return
         if path == "/api/health":
-            self._json({"ok": True, "version": _read_current_version(), "budget": BUDGET})
+            self._json({"ok": True, "version": _RUNNING_VERSION, "budget": BUDGET})
             return
         if path == "/api/update":
             self._json(check_now())

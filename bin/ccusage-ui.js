@@ -182,19 +182,20 @@ async function waitForUp(timeoutMs) {
 
 // --- stop -------------------------------------------------------------------
 async function handleStop() {
-  const pid = readDaemonPid();
-  if (pid && daemonAlive(pid)) {
-    try { process.kill(pid, 'SIGTERM'); } catch {}
-    console.log(`Stopping dashboard (pid ${pid}) …`);
-    const t0 = Date.now();
-    while (Date.now() - t0 < 5000 && await isServerUp()) {
-      await new Promise((r) => setTimeout(r, 300));
-    }
-    try { fs.unlinkSync(pidFile()); } catch {}
-    console.log('Dashboard stopped.');
+  // Ask the port, not just the pid file: a server started outside the launcher
+  // (e.g. `node lib/server.py`, or an instance whose pid file was never written)
+  // still owns the port, and that used to make --stop report nothing to stop.
+  const pid = managedServerPid();
+  if (!pid) {
+    console.log('No running dashboard instance found.');
     process.exit(0);
   }
-  console.log('No running dashboard instance found.');
+  console.log(`Stopping dashboard (pid ${pid}) …`);
+  if (!await stopServer(pid)) {
+    console.error(`[ccusage-dashboard] could not stop the dashboard on ${url}; stop it manually.`);
+    process.exit(1);
+  }
+  console.log('Dashboard stopped.');
   process.exit(0);
 }
 
