@@ -242,15 +242,28 @@ class CacheTest(unittest.TestCase):
 
     def test_nonzero_cli_exit_preserves_stderr_in_error(self) -> None:
         server.subprocess.run = lambda *args, **kwargs: FakeProc(
-            "", stderr="ccusage native binary is not available for darwin-arm64.", returncode=1
+            "", stderr="some other ccusage failure", returncode=1
         )
 
         result = server.run_ccusage(["daily", "--last", "1"], ttl=300)
 
         self.assertEqual(
             result.get("error"),
-            "ccusage exited with status 1: ccusage native binary is not available for darwin-arm64.",
+            "ccusage exited with status 1: some other ccusage failure",
         )
+
+    def test_missing_native_binary_error_carries_the_fix_command(self) -> None:
+        """The optional-native-dependency failure is an upstream npm issue that
+        stays broken until ccusage is reinstalled, so the message must say how."""
+        server.subprocess.run = lambda *args, **kwargs: FakeProc(
+            "", stderr="ccusage native binary is not available for darwin-arm64.", returncode=1
+        )
+
+        result = server.run_ccusage(["daily", "--last", "1"], ttl=300)
+
+        error = result.get("error", "")
+        self.assertIn("ccusage native binary is not available for darwin-arm64.", error)
+        self.assertIn("npm i -g ccusage@latest --force", error)
 
     def test_errors_are_not_cached_for_the_full_ttl(self) -> None:
         """A transient failure must expire fast, not stay cached for a whole TTL."""

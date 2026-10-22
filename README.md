@@ -111,6 +111,33 @@ ccusage   (your installed version — the real cost engine)
 - `lib/index.html` — single-file dashboard. No build step, no CDN.
 - `bin/ccusage-ui.js` — Node launcher (finds python3, starts server, prints URL).
 
+## Troubleshooting
+
+### `ccusage exited with status 1: ccusage native binary is not available for <platform>-<arch>`
+
+ccusage (>= 20) ships its real binary as a platform-specific **optional dependency**
+(`@ccusage/ccusage-darwin-arm64`, `@ccusage/ccusage-linux-x64`, …). npm treats a failed
+optional install as non-fatal: it drops the package from `package-lock.json` and then keeps
+the install marked as satisfied, so the breakage is silent at install time and **sticky**
+afterwards — re-running `npx ccusage` does not repair it. This is upstream npm/ccusage
+behaviour, not something the dashboard can fix for you.
+
+Fix — install ccusage globally; the dashboard prefers a `ccusage` on `PATH` over
+`npx`, so it picks the new copy up on the next poll (no restart needed):
+
+```bash
+npm i -g ccusage@latest --force
+ccusage --version    # must print a version, not the native-binary error
+```
+
+If you would rather keep using `npx` with nothing installed globally, drop the poisoned
+npx cache instead — every `npx`-run tool will simply re-download once:
+
+```bash
+rm -rf ~/.npm/_npx
+npx ccusage --version    # reinstalls ccusage with its native package
+```
+
 ## Local development
 
 ```bash

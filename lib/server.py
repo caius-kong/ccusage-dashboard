@@ -108,6 +108,20 @@ _ERROR_TTL = 30
 # write — keep the margin small and the period comfortably above one scan.
 _EXPIRY_MARGIN = 5
 
+# ccusage >= 20 ships its real binary as a platform-specific OPTIONAL dependency.
+# npm treats a failed optional install as non-fatal: it drops the package from
+# package-lock.json and then keeps the "satisfied" install forever, so the
+# breakage is silent at install time and sticky afterwards (re-running npx never
+# repairs it). That is upstream behaviour we cannot fix here, so the only thing
+# left to us is the message: name the one command that does resolve it.
+_NATIVE_MISSING_RE = re.compile(r"native binary is not available for [\w-]+")
+_NATIVE_MISSING_HINT = (
+    " — npm installs ccusage's native package as an optional dependency and silently"
+    " drops it when that install fails (upstream issue, not the dashboard's)."
+    " Fix: npm i -g ccusage@latest --force — the dashboard then uses the ccusage on"
+    " PATH, no restart needed. See README → Troubleshooting."
+)
+
 # --- optional self-update check (purely user-triggered) ----------------------
 # The dashboard is otherwise fully offline: it makes a network request ONLY when
 # the user clicks the "check update" button in the UI. A short debounce stops
@@ -173,6 +187,8 @@ def run_ccusage(args: list[str], ttl: float) -> dict:
                 )
                 if proc.returncode != 0:
                     detail = proc.stderr.strip() or proc.stdout.strip() or "no output"
+                    if _NATIVE_MISSING_RE.search(detail):
+                        detail += _NATIVE_MISSING_HINT
                     data = {"error": f"ccusage exited with status {proc.returncode}: {detail}"}
                 else:
                     data = json.loads(proc.stdout)
