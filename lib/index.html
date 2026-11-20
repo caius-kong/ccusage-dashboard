@@ -318,7 +318,7 @@ function renderSessions(data){
   if(!list.length){$("sessionsList").innerHTML='<div class="empty">no sessions in range</div>';return;}
   $("sessionsList").innerHTML=list.map(s=>{
     // Line 1 is one label: branch ?? workdir ?? the row's own timestamp.
-    const title=s.title||fmtWhen(s.lastActivity);
+    const title=s.title||fmtWhen(s.lastActivity)||"—";
     const titleTip=[s.cwd?`workdir: ${s.cwd}`:"",s.branch?`branch: ${s.branch}`:""].filter(Boolean).join(" · ")||`last activity: ${s.lastActivity||""}`;
     // ccusage emits no id for some sessions ("session"); nothing to show or copy then.
     const idPill=s.copyId?`<span class="pill sessid" title="click to copy full session id" onclick="copySessionId('${s.copyId.replace(/[\\']/g,"\\$&")}',event)">${esc(s.shortId)}</span>`:"";
