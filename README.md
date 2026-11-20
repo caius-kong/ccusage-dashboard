@@ -11,9 +11,10 @@
 >
 > The only exception is the **workdir label** in the Sessions tab: ccusage's session
 > report doesn't expose a real directory name for every agent, so the dashboard reads
-> each agent's own local session file (pi/openclaw/claude/codex stores) to display the
-> actual working directory. This is purely a display label — every cost/token number
-> still comes 100% from ccusage.
+> each agent's own local session file (pi/openclaw/claude stores) to display the
+> actual working directory. codex rows show their date instead — a codex session's
+> recorded cwd is a per-run worktree, which names no project. This is purely a
+> display label — every cost/token number still comes 100% from ccusage.
 
 </div>
 
@@ -74,7 +75,7 @@ launcher exits and the server keeps running, so you can close the terminal. Use
 | **Today / This Week / This Month / Custom Range** | totals + tokens + cache breakdown + **cache hit rate** |
 | **By model** | per-model cost, % of total, in/out/cache-read/cache-write tokens |
 | **30-day trend** | daily cost bar chart (hover for values, weekends marked) |
-| **Sessions** | per-session rows grouped by workdir name + short session id, sorted by cost — shares the top time-filter tabs (today/week/month/custom) |
+| **Sessions** | per-session rows labelled by workdir name + short session id, sorted by cost; the second line shows last activity (local time), the model that drove the session's cost, and token/cache figures. codex rows show their date instead of a workdir. Shares the top time-filter tabs (today/week/month/custom) |
 | **Budget alert** | monthly cap (default $300) — green <80%, yellow <100%, red ≥100% |
 
 All costs in USD. **Cache hit rate** is the standard input-side metric:

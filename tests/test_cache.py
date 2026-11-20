@@ -357,5 +357,31 @@ class FrontendPollTest(unittest.TestCase):
         self.assertNotIn("setInterval(tick,15000)", html)
         self.assertIn(f"auto-refresh {server._REFRESH_INTERVAL}s", html)
 
+class SessionIdTest(unittest.TestCase):
+    """A session row's id pill must show an id you can act on, never a placeholder.
+
+    codex's `period` is a date path, so its first characters are a date, not an id;
+    ccusage emits the bare word "session" when it cannot attribute one at all.
+    """
+
+    def test_codex_period_yields_the_uuid_not_the_date_path(self) -> None:
+        uuid = "01a1f793-9ce0-7993-a875-b2911f1d01f1"
+        short, full = server._session_ids("codex", f"2026/11/20/rollout-2026-11-20T14-10-10-{uuid}")
+        self.assertEqual(full, uuid)
+        self.assertEqual(short, uuid[:8])
+
+    def test_uuid_period_is_shown_short_and_copied_whole(self) -> None:
+        uuid = "01a1a98d-def6-7456-8c2e-7e1c0df8e82d"
+        self.assertEqual(server._session_ids("pi", uuid), (uuid[:8], uuid))
+
+    def test_placeholder_period_shows_no_pill(self) -> None:
+        self.assertEqual(server._session_ids("pi", "session"), ("", ""))
+        self.assertEqual(server._session_ids("codex", ""), ("", ""))
+
+    def test_frontend_does_not_slice_the_raw_period(self) -> None:
+        html = (Path(__file__).resolve().parent.parent / "lib" / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("s.id.slice(0,8)", html)
+
+
 if __name__ == "__main__":
     unittest.main()

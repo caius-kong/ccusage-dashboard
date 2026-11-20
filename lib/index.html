@@ -200,6 +200,15 @@ function fmtTok(n){
   return String(n);
 }
 function fmtPct(n){return n==null?"–":n.toFixed(1)+"%";}
+function p2(n){return String(n).padStart(2,"0");}
+// Session times arrive as UTC ISO; show them in the viewer's local clock.
+function fmtDay(iso){const d=new Date(iso||"");return isNaN(d)?"":`${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}`;}
+function fmtWhen(iso){const d=new Date(iso||"");return isNaN(d)?"":`${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;}
+// Model names come as "[agent] model"; the agent is already a pill on the row.
+function splitModelName(name){
+  const m=String(name||"").match(/^\[(.+?)\]\s*(.*)$/);
+  return m?{badge:m[1],name:m[2]||m[1]}:{badge:"",name:String(name||"")};
+}
 // cache hit rate (input side): read / (read + non-cached input). Shared by the
 // c5 summary card and per-row hit spans.
 function cacheHitStats(o){
@@ -239,10 +248,10 @@ function renderModels(data){
   modelCtx=models;
   $("modelList").innerHTML=models.map(m=>{
     const pct=total>0?(m.cost/total)*100:0;
-    const m2=m.name.match(/^\[(.+?)\]\s*(.*)$/);
-    const badge=m2?`<span class="pill">${esc(m2[1])}</span>`:"";
-    const mn=m2?esc(m2[2]||m2[1]):esc(m.name);
-    return `<div class="row"><div class="row-top"><span class="name">${mn}${badge ? " " + badge : ""}</span><span class="cost">${fmtUsd(m.cost)} · ${pct.toFixed(1)}%</span></div>
+    const {badge,name}=splitModelName(m.name);
+    const badgeHtml=badge?`<span class="pill">${esc(badge)}</span>`:"";
+    const mn=esc(name);
+    return `<div class="row"><div class="row-top"><span class="name">${mn}${badgeHtml ? " " + badgeHtml : ""}</span><span class="cost">${fmtUsd(m.cost)} · ${pct.toFixed(1)}%</span></div>
       <div class="toks"><span title="input">in ${fmtTok(m.inputTokens)}</span><span title="output">out ${fmtTok(m.outputTokens)}</span><span title="cache read">read ${fmtTok(m.cacheReadTokens)}</span>${cacheHitSpan(m)}<span title="cache write">write ${fmtTok(m.cacheCreationTokens)}</span></div>
       <div class="bar"><div style="width:${Math.max(pct,1.2)}%"></div></div></div>`;
   }).join("");
@@ -280,6 +289,17 @@ async function loadSessions(){
   renderSessions(data);
 }
 
+// The model that drove the session's cost — the second most identifying
+// signal after the workdir when several sessions share a project.
+function modelLabel(models){
+  const list=(models||[]).filter(m=>m&&m.name);
+  if(!list.length)return "";
+  const top=splitModelName(list[0].name).name;
+  const more=list.length>1?` +${list.length-1}`:"";
+  const tip=list.map(x=>`${splitModelName(x.name).name} ${fmtUsd(x.cost)}`).join(" · ");
+  return `<span title="models used: ${esc(tip)}">${esc(top)}${more}</span>`;
+}
+
 function renderSessions(data){
   const list=data.sessions||[];
   const total=data.total||0;
@@ -288,15 +308,21 @@ function renderSessions(data){
   $("sessRange").textContent=`${total} sessions`;
   if(!list.length){$("sessionsList").innerHTML='<div class="empty">no sessions in range</div>';return;}
   $("sessionsList").innerHTML=list.map(s=>{
-    const shortId=s.id.slice(0,8);
-    const idPill=`<span class="pill sessid" title="click to copy full session id" onclick="copySessionId('${s.id.replace(/[\\']/g,"\\$&")}',event)">${esc(shortId)}</span>`;
-    const label = s.hasCwd
-      ? `<span class="name" title="workdir: ${esc(s.cwd||s.projectKey)}">${esc(s.dirName||shortId)} ${idPill}</span>`
-      : `<span class="name muted" title="no workdir found for this ${esc(s.agent)} session">${idPill}</span>`;
-    const last=(s.lastActivity||"").slice(0,10);
+    // codex reports a per-run worktree as its cwd, which names no project: the
+    // session's own date identifies it better, so no workdir label for codex.
+    const codex=s.agent==="codex";
+    // ccusage emits no id for some sessions ("session"); there is nothing to
+    // show or copy then, so the pill is omitted rather than showing a placeholder.
+    const idPill=s.copyId?`<span class="pill sessid" title="click to copy full session id" onclick="copySessionId('${s.copyId.replace(/[\\']/g,"\\$&")}',event)">${esc(s.shortId)}</span>`:"";
+    let label;
+    if(codex)label=`<span class="name" title="${esc(s.lastActivity||"")}">${esc(fmtDay(s.lastActivity)||"session")} ${idPill}</span>`;
+    else if(s.hasCwd)label=`<span class="name" title="workdir: ${esc(s.cwd||s.projectKey)}">${esc(s.dirName||s.shortId||"session")} ${idPill}</span>`;
+    else label=`<span class="name muted" title="no workdir found for this ${esc(s.agent)} session">${idPill||esc(fmtDay(s.lastActivity))}</span>`;
+    const when=codex?"":fmtWhen(s.lastActivity);
+    const model=codex?"":modelLabel(s.models);
     return `<div class="row">
       <div class="row-top"><span>${label} <span class="pill">${esc(s.agent)}</span></span><span class="cost">${fmtUsd(s.cost)}</span></div>
-      <div class="toks">${last?`<span>${esc(last)}</span>`:""}<span title="input">in ${fmtTok(s.inputTokens)}</span><span title="output">out ${fmtTok(s.outputTokens)}</span><span title="cache read">read ${fmtTok(s.cacheReadTokens)}</span>${cacheHitSpan(s)}<span title="cache write">write ${fmtTok(s.cacheCreationTokens)}</span></div>
+      <div class="toks">${when?`<span title="last activity: ${esc(s.lastActivity)}">${esc(when)}</span>`:""}${model}<span title="input">in ${fmtTok(s.inputTokens)}</span><span title="output">out ${fmtTok(s.outputTokens)}</span><span title="cache read">read ${fmtTok(s.cacheReadTokens)}</span>${cacheHitSpan(s)}<span title="cache write">write ${fmtTok(s.cacheCreationTokens)}</span></div>
     </div>`;
   }).join("");
 }

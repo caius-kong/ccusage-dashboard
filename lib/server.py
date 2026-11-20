@@ -420,7 +420,9 @@ def sessions(since_days: int = 30, period: str = "", from_date: str = "", to_dat
         agent_name = r.get("agent", "?")
         cwd = ""
         dir_name = ""
-        if sid:
+        if sid and agent_name != "codex":
+            # codex cwds are per-run worktrees, not a project identity, so they are
+            # not shown (and not scanned for).
             disk_cwd = _cwd_for(agent_name, sid, project_raw)
             if disk_cwd:
                 cwd = disk_cwd
@@ -430,9 +432,20 @@ def sessions(since_days: int = 30, period: str = "", from_date: str = "", to_dat
         if not cwd:
             cwd = _decode_cwd(project_raw)
             dir_name = _basename(project_raw)
+        models = sorted(
+            (
+                {"name": b.get("modelName") or "?", "cost": round(b.get("cost", 0) or 0, 4)}
+                for b in (r.get("modelBreakdowns") or [])
+            ),
+            key=lambda m: m["cost"],
+            reverse=True,
+        )
+        short_id, copy_id = _session_ids(agent_name, sid)
         out.append(
             {
                 "id": sid or "",
+                "shortId": short_id,
+                "copyId": copy_id,
                 "agent": agent_name,
                 "cost": round(r.get("totalCost", 0) or 0, 4),
                 "inputTokens": r.get("inputTokens", 0),
@@ -440,6 +453,7 @@ def sessions(since_days: int = 30, period: str = "", from_date: str = "", to_dat
                 "cacheReadTokens": r.get("cacheReadTokens", 0),
                 "cacheCreationTokens": r.get("cacheCreationTokens", 0),
                 "lastActivity": last_activity,
+                "models": models,
                 "cwd": cwd,
                 "dirName": dir_name,
                 "projectKey": project_raw,
@@ -449,6 +463,30 @@ def sessions(since_days: int = 30, period: str = "", from_date: str = "", to_dat
     out.sort(key=lambda s: s["cost"], reverse=True)
     total_cost = round(sum(s["cost"] for s in out), 4)
     return {"total": len(out), "totalCost": total_cost, "sessions": out}
+
+
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_CODEX_ROLLOUT_RE = re.compile(r"^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)$")
+
+
+def _session_ids(agent: str, period: str):
+    """(short display id, full id to copy) for a session row, or ("", "").
+
+    codex's `period` is a date path ("2026/11/20/rollout-<ts>-<uuid>"), so its
+    first characters are a date, not an id; the uuid tail is the id that
+    `codex resume` accepts. A period that is no id at all (ccusage emits
+    "session" when it cannot attribute one) has nothing worth showing or copying.
+    """
+    sid = period or ""
+    if agent == "codex":
+        m = _CODEX_ROLLOUT_RE.match(sid.split("/")[-1])
+        if m:
+            uuid = m.group(1)
+            return uuid[:8], uuid
+        return "", ""
+    if _UUID_RE.match(sid):
+        return sid[:8], sid
+    return "", ""
 
 
 def _pi_cwd_from_disk(project_key: str):
@@ -513,30 +551,6 @@ def _cwd_from_jsonl(path):
     return None
 
 
-def _codex_cwd(path):
-    """codex stores cwd inside the session_meta payload, not top-level."""
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for _ in range(200):
-                line = fh.readline()
-                if not line:
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except Exception:
-                    continue
-                if isinstance(rec, dict) and rec.get("type") == "session_meta":
-                    cwd = (rec.get("payload") or {}).get("cwd")
-                    if isinstance(cwd, str) and cwd.strip():
-                        return cwd.strip().rstrip("/")
-    except (OSError, ValueError):
-        return None
-    return None
-
-
 def _agent_index(agent):
     """Build (once) a {session_id: [paths]} for an agent's local session store."""
     if agent in _AGENT_INDEX:
@@ -554,13 +568,6 @@ def _agent_index(agent):
                 if sub.is_dir():
                     for f in sub.glob("*.jsonl"):
                         idx.setdefault(f.name[:-6], []).append(str(f))
-    elif agent == "codex":
-        root = home / ".codex" / "sessions"
-        if root.is_dir():
-            for f in root.glob("*/*/*/rollout-*.jsonl"):
-                idx.setdefault(f.name[len("rollout-"):-len(".jsonl")], []).append(str(f))
-            for f in root.glob("*/*/rollout-*.jsonl"):
-                idx.setdefault(f.name[len("rollout-"):-len(".jsonl")], []).append(str(f))
     _AGENT_INDEX[agent] = idx
     return idx
 
@@ -571,7 +578,7 @@ def _session_to_cwd(agent, sid):
     if not paths:
         return None
     for p in paths:
-        cwd = _codex_cwd(p) if agent == "codex" else _cwd_from_jsonl(p)
+        cwd = _cwd_from_jsonl(p)
         if cwd:
             return cwd
     return None
@@ -591,15 +598,10 @@ def _cwd_for(agent, sid, project_key=""):
         return cwd
     if not sid:
         return None
-    # codex session ids are date-path prefixed ("2025/10/17/rollout-<id>"); the
-    # local file is named "rollout-<id>.jsonl", so match on the final segment.
-    lookup_sid = sid.split("/")[-1]
-    if lookup_sid.startswith("rollout-") and agent == "codex":
-        lookup_sid = lookup_sid[len("rollout-"):]
-    key = agent + "\x1f" + lookup_sid
+    key = agent + "\x1f" + sid
     if key in _CWD_CACHE:
         return _CWD_CACHE[key]
-    cwd = _session_to_cwd(agent, lookup_sid)
+    cwd = _session_to_cwd(agent, sid)
     _CWD_CACHE[key] = cwd
     return cwd
 
