@@ -71,6 +71,14 @@
   .sessid{font-variant-numeric:tabular-nums;letter-spacing:.3px;cursor:pointer;transition:background .15s,border-color .15s,color .15s}
   .sessid:hover{background:var(--accent);border-color:var(--accent);color:#0d1117}
   .sessid.copied{background:var(--green);border-color:var(--green);color:#0d1117}
+  /* Sessions row: one label, then the fixed aux fields, then an optional prompt. */
+  .row .sname{font-size:14.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+  .row .aux{color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;align-items:baseline;gap:7px;margin-top:4px}
+  .row .aux .sep{opacity:.35}
+  .row .aux .pill{margin-left:0}
+  .row .aux .model{color:var(--text);opacity:.85}
+  .row .aux .nick{color:var(--accent);border-color:#1f3a5f}
+  .row .prompt{color:var(--muted);font-size:11px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.75}
   .budget-band{margin:2px 0 14px;background:var(--panel-2);border-radius:8px;padding:12px 16px;display:flex;flex-direction:column;gap:8px}
   .budget-band .bl{display:flex;justify-content:space-between;font-size:13px;color:var(--muted)}
   .budget-band .bl b{color:var(--text)}
@@ -202,7 +210,6 @@ function fmtTok(n){
 function fmtPct(n){return n==null?"–":n.toFixed(1)+"%";}
 function p2(n){return String(n).padStart(2,"0");}
 // Session times arrive as UTC ISO; show them in the viewer's local clock.
-function fmtDay(iso){const d=new Date(iso||"");return isNaN(d)?"":`${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}`;}
 function fmtWhen(iso){const d=new Date(iso||"");return isNaN(d)?"":`${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;}
 // Model names come as "[agent] model"; the agent is already a pill on the row.
 function splitModelName(name){
@@ -222,6 +229,8 @@ function cacheHitSpan(o){
   return `<span title="${tip}">hit ${fmtPct(rate)}</span>`;
 }
 function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+// esc() leaves quotes alone; prompts and paths can contain them.
+function escAttr(s){return esc(s).replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
 async function copySessionId(id, ev){
   ev.stopPropagation();
   const el=ev.currentTarget; // capture before any await; currentTarget is nulled after dispatch
@@ -308,21 +317,31 @@ function renderSessions(data){
   $("sessRange").textContent=`${total} sessions`;
   if(!list.length){$("sessionsList").innerHTML='<div class="empty">no sessions in range</div>';return;}
   $("sessionsList").innerHTML=list.map(s=>{
-    // codex reports a per-run worktree as its cwd, which names no project: the
-    // session's own date identifies it better, so no workdir label for codex.
-    const codex=s.agent==="codex";
-    // ccusage emits no id for some sessions ("session"); there is nothing to
-    // show or copy then, so the pill is omitted rather than showing a placeholder.
+    // Line 1 is one label: branch ?? workdir ?? the row's own timestamp.
+    const title=s.title||fmtWhen(s.lastActivity);
+    const titleTip=[s.cwd?`workdir: ${s.cwd}`:"",s.branch?`branch: ${s.branch}`:""].filter(Boolean).join(" · ")||`last activity: ${s.lastActivity||""}`;
+    // ccusage emits no id for some sessions ("session"); nothing to show or copy then.
     const idPill=s.copyId?`<span class="pill sessid" title="click to copy full session id" onclick="copySessionId('${s.copyId.replace(/[\\']/g,"\\$&")}',event)">${esc(s.shortId)}</span>`:"";
-    let label;
-    if(codex)label=`<span class="name" title="${esc(s.lastActivity||"")}">${esc(fmtDay(s.lastActivity)||"session")} ${idPill}</span>`;
-    else if(s.hasCwd)label=`<span class="name" title="workdir: ${esc(s.cwd||s.projectKey)}">${esc(s.dirName||s.shortId||"session")} ${idPill}</span>`;
-    else label=`<span class="name muted" title="no workdir found for this ${esc(s.agent)} session">${idPill||esc(fmtDay(s.lastActivity))}</span>`;
-    const when=codex?"":fmtWhen(s.lastActivity);
-    const model=codex?"":modelLabel(s.models);
+    const nick=s.nick?`<span class="pill nick" title="sub-agent${s.role?` (${escAttr(s.role)})`:''}">${esc(s.nick)}</span>`:"";
+    const when=s.titleKind==="time"?"":fmtWhen(s.lastActivity);
+    const aux=[
+      when?`<span title="last activity: ${escAttr(s.lastActivity)}">${esc(when)}</span>`:"",
+      idPill,
+      nick,
+      `<span class="pill">${esc(s.agent)}</span>`,
+      modelLabel(s.models),
+      `<span title="input">in ${fmtTok(s.inputTokens)}</span>`,
+      `<span title="output">out ${fmtTok(s.outputTokens)}</span>`,
+      `<span title="cache read">read ${fmtTok(s.cacheReadTokens)}</span>`,
+      cacheHitSpan(s),
+      `<span title="cache write">write ${fmtTok(s.cacheCreationTokens)}</span>`,
+    ].filter(Boolean).join('<span class="sep">·</span>');
+    // The only field that says what the session was FOR, kept small and grey.
+    const prompt=s.prompt?`<div class="prompt" title="${escAttr(s.prompt)}">${esc(s.prompt)}</div>`:"";
     return `<div class="row">
-      <div class="row-top"><span>${label} <span class="pill">${esc(s.agent)}</span></span><span class="cost">${fmtUsd(s.cost)}</span></div>
-      <div class="toks">${when?`<span title="last activity: ${esc(s.lastActivity)}">${esc(when)}</span>`:""}${model}<span title="input">in ${fmtTok(s.inputTokens)}</span><span title="output">out ${fmtTok(s.outputTokens)}</span><span title="cache read">read ${fmtTok(s.cacheReadTokens)}</span>${cacheHitSpan(s)}<span title="cache write">write ${fmtTok(s.cacheCreationTokens)}</span></div>
+      <div class="row-top"><span class="sname" title="${escAttr(titleTip)}">${esc(title)}</span><span class="cost">${fmtUsd(s.cost)}</span></div>
+      <div class="aux">${aux}</div>
+      ${prompt}
     </div>`;
   }).join("");
 }

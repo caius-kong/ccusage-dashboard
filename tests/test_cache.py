@@ -383,5 +383,69 @@ class SessionIdTest(unittest.TestCase):
         self.assertNotIn("s.id.slice(0,8)", html)
 
 
+class SessionLabelTest(unittest.TestCase):
+    """A row's label comes from the agent's own session file, never from ccusage.
+
+    ccusage's session payload carries no workdir/branch/title, so these pin the
+    extraction that fills that gap: label ladder, prompt cleanup, cache keying.
+    """
+
+    def _session_file(self, records):
+        import tempfile
+
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8")
+        for rec in records:
+            tmp.write(json.dumps(rec) + "\n")
+        tmp.close()
+        self.addCleanup(os.unlink, tmp.name)
+        return tmp.name
+
+    def test_codex_prompt_reads_input_text_blocks(self) -> None:
+        """codex types its text blocks `input_text`; reading only `text` made
+        every codex session look untitled."""
+        path = self._session_file(
+            [
+                {"type": "session_meta", "payload": {"cwd": "/repo/wt/task-a/"}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "TASK: audit the test suite"}],
+                    },
+                },
+            ]
+        )
+        meta = server._read_session("codex", path)
+        self.assertEqual(meta["cwd"], "/repo/wt/task-a")
+        self.assertEqual(meta["prompt"], "TASK: audit the test suite")
+
+    def test_harness_preamble_is_stripped_from_the_prompt(self) -> None:
+        self.assertEqual(
+            server._prompt_text('<skill name="x" location="/y">body</skill>\n  do the real thing'),
+            "do the real thing",
+        )
+        self.assertEqual(
+            server._prompt_text("<environment_context>\n<cwd>/tmp</cwd>\n</environment_context>\nread the file"),
+            "read the file",
+        )
+        # nothing but harness text: no prompt at all, rather than showing it raw
+        self.assertIsNone(server._prompt_text("<skills_instructions>only noise</skills_instructions>"))
+
+    def test_title_prefers_a_task_branch_then_the_workdir_then_the_time(self) -> None:
+        self.assertEqual(server._title({"branch": "fix/teams-reply"}, "skills"), ("fix/teams-reply", "branch"))
+        # a default branch names no task, so the workdir wins
+        self.assertEqual(server._title({"branch": "main"}, "skills"), ("skills", "workdir"))
+        self.assertEqual(server._title({}, ""), ("", "time"))
+
+    def test_meta_cache_key_separates_sessions_in_one_project(self) -> None:
+        """pi keys its session dir by project, so keying the cache by project alone
+        made every session in a project show the first one's prompt."""
+        self.assertNotEqual(
+            server._meta_key("pi", "id-a", "--Users-me-proj--"),
+            server._meta_key("pi", "id-b", "--Users-me-proj--"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

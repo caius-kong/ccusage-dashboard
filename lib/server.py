@@ -364,9 +364,11 @@ def trend(days: int = 30) -> dict:
 
 
 def sessions(since_days: int = 30, period: str = "", from_date: str = "", to_date: str = "") -> dict:
-    """Return ccusage's session report, each with its real workdir (dirName) when
-    the agent's local session store records one. Every numeric cost/token field
-    comes 100% from ccusage; the workdir is only a display label.
+    """Return ccusage's session report, each row labelled from its own session file.
+
+    Every numeric cost/token field comes 100% from ccusage. The label data (title,
+    branch, prompt) is read from the agent's local session store because ccusage's
+    session report carries no workdir/branch/title at all; see _local_meta.
 
     Filtering: pass `period` in ("today" | "week" | "month") OR an explicit
     date range via `from_date`/`to_date` (YYYY-MM-DD). `since_days` is kept for
@@ -418,20 +420,19 @@ def sessions(since_days: int = 30, period: str = "", from_date: str = "", to_dat
         last_activity = meta.get("lastActivity") or ""
         project_raw = meta.get("projectPath") or ""
         agent_name = r.get("agent", "?")
-        cwd = ""
+        short_id, copy_id = _session_ids(agent_name, sid)
+        meta = _local_meta(agent_name, copy_id, project_raw)
+        cwd = meta["cwd"]
         dir_name = ""
-        if sid and agent_name != "codex":
-            # codex cwds are per-run worktrees, not a project identity, so they are
-            # not shown (and not scanned for).
-            disk_cwd = _cwd_for(agent_name, sid, project_raw)
-            if disk_cwd:
-                cwd = disk_cwd
-                cwd_base = disk_cwd.rstrip("/").split("/")[-1]
-                if cwd_base:
-                    dir_name = cwd_base
+        if cwd:
+            cwd_base = cwd.rstrip("/").split("/")[-1]
+            if cwd_base:
+                dir_name = cwd_base
         if not cwd:
+            # ccusage's own projectPath (pi only, and lossy) is the last resort.
             cwd = _decode_cwd(project_raw)
             dir_name = _basename(project_raw)
+        title, title_kind = _title(meta, dir_name)
         models = sorted(
             (
                 {"name": b.get("modelName") or "?", "cost": round(b.get("cost", 0) or 0, 4)}
@@ -440,12 +441,17 @@ def sessions(since_days: int = 30, period: str = "", from_date: str = "", to_dat
             key=lambda m: m["cost"],
             reverse=True,
         )
-        short_id, copy_id = _session_ids(agent_name, sid)
         out.append(
             {
                 "id": sid or "",
                 "shortId": short_id,
                 "copyId": copy_id,
+                "title": title,
+                "titleKind": title_kind,
+                "prompt": meta["prompt"],
+                "branch": meta["branch"],
+                "nick": meta["nick"],
+                "role": meta["role"],
                 "agent": agent_name,
                 "cost": round(r.get("totalCost", 0) or 0, 4),
                 "inputTokens": r.get("inputTokens", 0),
@@ -455,9 +461,7 @@ def sessions(since_days: int = 30, period: str = "", from_date: str = "", to_dat
                 "lastActivity": last_activity,
                 "models": models,
                 "cwd": cwd,
-                "dirName": dir_name,
                 "projectKey": project_raw,
-                "hasCwd": bool(cwd),
             }
         )
     out.sort(key=lambda s: s["cost"], reverse=True)
@@ -489,121 +493,186 @@ def _session_ids(agent: str, period: str):
     return "", ""
 
 
-def _pi_cwd_from_disk(project_key: str):
-    """Best-effort real workdir for a pi session project.
-
-    pi stores sessions under ~/.pi/agent/sessions/<projectKey>/<ts>_<id>.jsonl,
-    whose first line carries an authoritative "cwd". Reading it lets the dashboard
-    show the REAL dir name (e.g. "fund-tracker") instead of the lossy basename that
-    the encoded projectPath produces ("tracker").
-
-    This only supplies the DISPLAY label — costs/tokens still come from ccusage.
-    Returns None (caller falls back) if the dir/file is missing or unreadable.
-    """
-    import glob
-
-    try:
-        root = Path.home() / ".pi" / "agent" / "sessions" / project_key
-        if not root.is_dir():
-            return None
-        candidates = sorted(glob.glob(str(root / "*.jsonl")))
-        for path in candidates:
-            cwd = _cwd_from_jsonl(path)
-            if cwd:
-                return cwd
-    except Exception:
-        return None
-    return None
-
-
-# --- Unified authoritative-workdir resolution for every agent that stores one ---
+# --- Local session stores: the only source of row LABELS ---
 #
-# ccusage's session report only exposes projectPath for pi (and it's lossy for
-# hyphenated dir names). To show the REAL dir name for all sessions we resolve the
-# workdir from each agent's own local session store. This drives only the DISPLAY
-# label (dirName); every numeric cost/token value still comes 100% from ccusage.
+# ccusage's session report carries no workdir, branch or title. Its entire payload
+# (verified over the full history, every agent) is:
+#   period, agent, tokens/cost, modelsUsed, modelBreakdowns, metadata.lastActivity,
+#   metadata.projectPath (pi only), metadata.reasoningOutputTokens (codex only).
+# So a row's label is read from the agent's own session file: the workdir, the
+# checked-out branch, and the first real user prompt. This is a DISPLAY label only
+# — every numeric value on the row still comes 100% from ccusage.
 
-_CWD_CACHE = {}      # "agent\x1fsid" -> cwd | None
-_AGENT_INDEX = {}     # agent -> {session_id: [paths]} (built lazily)
+# A branch checked out in the main worktree names no task; fall through to the dir.
+_DEFAULT_BRANCHES = {"main", "master", "develop", "trunk", "head"}
+
+# Harness text that precedes the user's actual ask inside a session file.
+_NOISE_PREFIX = (
+    "<environment_context>",
+    "<skills_instructions>",
+    "<multi_agent_role>",
+    "<multi_agent_mode>",
+    "<user_instructions>",
+    "# AGENTS.md instructions",
+    "# CLAUDE.md instructions",
+    "Caveat: The messages below",
+    "[Request interrupted",
+    "This session is being continued",
+)
+_INSTR_BLOCK_RE = re.compile(
+    r"^#\s+\w+\.md instructions\s*<INSTRUCTIONS>.*?</INSTRUCTIONS>\s*", re.S
+)
+# Tags may carry attributes: <skill name="…" location="…">…</skill>
+_XML_BLOCK_RE = re.compile(r"^<([a-z][\w-]*)(?:\s[^>]*)?>.*?</\1>\s*", re.S)
+
+_META_CACHE = {}  # "agent\x1fsession" -> meta dict (successful reads only)
 
 
-def _cwd_from_jsonl(path):
-    """Scan a session .jsonl (first few lines) for the first real 'cwd' string."""
+def _iter_head(path, limit=500):
+    """Yield parsed records from the head of a session file."""
     try:
         with open(path, encoding="utf-8") as fh:
-            for _ in range(80):
+            for _ in range(limit):
                 line = fh.readline()
                 if not line:
-                    break
+                    return
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    rec = json.loads(line)
+                    yield json.loads(line)
                 except Exception:
                     continue
-                if isinstance(rec, dict):
-                    cwd = rec.get("cwd")
-                    if isinstance(cwd, str) and cwd.strip():
-                        return cwd.strip().rstrip("/")
-    except (OSError, ValueError):
+    except OSError:
+        return
+
+
+def _block_text(content) -> str:
+    """Flatten a message body. Codex/claude use input_text/output_text, not text."""
+    if isinstance(content, str):
+        return content
+    out = []
+    if isinstance(content, list):
+        for b in content:
+            if isinstance(b, str):
+                out.append(b)
+            elif isinstance(b, dict) and b.get("text"):
+                out.append(b["text"])
+    return "\n".join(out)
+
+
+def _prompt_text(content):
+    """The user's actual ask, with harness preambles stripped; None if there is none."""
+    text = _block_text(content).strip()
+    for _ in range(6):
+        before = text
+        text = _INSTR_BLOCK_RE.sub("", text, count=1)
+        text = _XML_BLOCK_RE.sub("", text, count=1)
+        text = text.strip()
+        if text == before:
+            break
+    text = " ".join(text.split()).strip(" -#>|")
+    if len(text) < 10 or any(text.startswith(n) for n in _NOISE_PREFIX):
         return None
-    return None
+    return text
 
 
-def _agent_index(agent):
-    """Build (once) a {session_id: [paths]} for an agent's local session store."""
-    if agent in _AGENT_INDEX:
-        return _AGENT_INDEX[agent]
+def _read_session(agent, path) -> dict:
+    """workdir + branch + sub-agent identity + first prompt, in one pass."""
+    meta = {"cwd": "", "branch": "", "nick": "", "role": "", "prompt": ""}
+    for rec in _iter_head(path):
+        if agent == "codex":
+            if rec.get("type") == "session_meta":
+                pl = rec.get("payload") or {}
+                meta["cwd"] = meta["cwd"] or (pl.get("cwd") or "").strip().rstrip("/")
+                meta["nick"] = meta["nick"] or (pl.get("agent_nickname") or "")
+                meta["role"] = meta["role"] or (pl.get("agent_role") or "")
+                git = pl.get("git") or {}
+                meta["branch"] = meta["branch"] or (git.get("branch") or "")
+            elif rec.get("type") == "response_item":
+                pl = rec.get("payload") or {}
+                if pl.get("type") == "message" and pl.get("role") == "user" and not meta["prompt"]:
+                    meta["prompt"] = _prompt_text(pl.get("content")) or ""
+        elif agent == "claude":
+            meta["cwd"] = meta["cwd"] or (rec.get("cwd") or "").strip().rstrip("/")
+            meta["branch"] = meta["branch"] or (rec.get("gitBranch") or "")
+            if rec.get("type") == "user" and not rec.get("isMeta") and not meta["prompt"]:
+                msg = rec.get("message") or {}
+                if msg.get("role") == "user":
+                    meta["prompt"] = _prompt_text(msg.get("content")) or ""
+        elif agent == "pi":
+            if rec.get("type") == "session":
+                meta["cwd"] = meta["cwd"] or (rec.get("cwd") or "").strip().rstrip("/")
+            if rec.get("type") == "message" and not meta["prompt"]:
+                msg = rec.get("message") or {}
+                if msg.get("role") == "user":
+                    meta["prompt"] = _prompt_text(msg.get("content")) or ""
+        if meta["cwd"] and meta["prompt"]:
+            break
+    return meta
+
+
+def _session_file(agent, sid, project_key):
+    """Locate an agent's session file by id (pi keys its dir by project, not id)."""
     home = Path.home()
-    idx = {}
-    if agent == "openclaw":
-        base = home / ".openclaw" / "agents" / "main" / "sessions"
-        for f in (base.glob("*.jsonl") if base.is_dir() else []):
-            idx.setdefault(f.name[:-6], []).append(str(f))
-    elif agent == "claude":
+    if agent == "pi":
+        if not project_key or not sid:
+            return None
+        d = home / ".pi" / "agent" / "sessions" / project_key
+        hits = sorted(d.glob(f"*_{sid}.jsonl")) if d.is_dir() else []
+        return hits[0] if hits else None
+    if not sid:
+        return None
+    if agent == "claude":
         proj = home / ".claude" / "projects"
         if proj.is_dir():
             for sub in proj.iterdir():
                 if sub.is_dir():
-                    for f in sub.glob("*.jsonl"):
-                        idx.setdefault(f.name[:-6], []).append(str(f))
-    _AGENT_INDEX[agent] = idx
-    return idx
-
-
-def _session_to_cwd(agent, sid):
-    """Locate an agent's session file by id and return its real cwd (or None)."""
-    paths = _agent_index(agent).get(sid)
-    if not paths:
+                    hits = list(sub.glob(f"{sid}*.jsonl"))
+                    if hits:
+                        return hits[0]
         return None
-    for p in paths:
-        cwd = _cwd_from_jsonl(p)
-        if cwd:
-            return cwd
+    if agent == "codex":
+        root = home / ".codex" / "sessions"
+        hits = list(root.glob(f"*/*/*/rollout-*{sid}*.jsonl")) if root.is_dir() else []
+        return hits[0] if hits else None
     return None
 
 
-def _cwd_for(agent, sid, project_key=""):
-    """Real workdir for a session. pi resolves by project key; the rest by session id.
-    Returns the real cwd (or None if unresolvable). Only drives the DISPLAY label."""
-    if agent == "pi":
-        if not project_key:
-            return None
-        key = "pi\x1f" + project_key
-        if key in _CWD_CACHE:
-            return _CWD_CACHE[key]
-        cwd = _pi_cwd_from_disk(project_key)
-        _CWD_CACHE[key] = cwd
-        return cwd
-    if not sid:
-        return None
-    key = agent + "\x1f" + sid
-    if key in _CWD_CACHE:
-        return _CWD_CACHE[key]
-    cwd = _session_to_cwd(agent, sid)
-    _CWD_CACHE[key] = cwd
-    return cwd
+def _meta_key(agent, sid, project_key="") -> str:
+    """Cache key: a pi project holds many sessions, so the id must be in the key."""
+    return agent + "\x1f" + sid + "\x1f" + project_key
+
+
+def _local_meta(agent, sid, project_key="") -> dict:
+    """Label data for one session, cached once its prompt is known.
+
+    Caching only complete reads keeps a live session from being pinned with no
+    prompt for the life of the process; an incomplete read costs one file head.
+    """
+    key = _meta_key(agent, sid, project_key)
+    hit = _META_CACHE.get(key)
+    if hit is not None:
+        return hit
+    path = _session_file(agent, sid, project_key)
+    meta = _read_session(agent, path) if path else {"cwd": "", "branch": "", "nick": "", "role": "", "prompt": ""}
+    if meta["prompt"]:
+        _META_CACHE[key] = meta
+    return meta
+
+
+def _title(meta: dict, dir_name: str):
+    """label1 ?? label2 ?? "" — the strongest identifying label available.
+
+    A non-default branch names the task ("fix/teams-reply-plan-blocks"); the
+    workdir name is next; with neither, the row falls back to its own timestamp.
+    """
+    branch = (meta.get("branch") or "").strip()
+    if branch and branch.lower() not in _DEFAULT_BRANCHES:
+        return branch, "branch"
+    if dir_name:
+        return dir_name, "workdir"
+    return "", "time"
 
 
 def _decode_cwd(raw: str) -> str:
