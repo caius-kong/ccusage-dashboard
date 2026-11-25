@@ -27,7 +27,8 @@
 token usage & cost from local data — accurate, but terminal-only and hard to *watch*.
 
 **ccusage-dashboard puts a live web UI on top of it**: today / this week / this month /
-custom-range cost grouped by model, a 30-day cost trend, and a monthly budget alert.
+custom-range cost grouped by model, a 30-day cost trend, and a monthly budget alert
+(double-click the budget pill to change the cap).
 It auto-refreshes while you work, so you can *see* spend happen instead of running reports.
 
 Only the view you're looking at is polled: **Today** (the default) refreshes every 60s;
@@ -54,7 +55,7 @@ and prints the dashboard URL for you to open.
 
 ```bash
 npx @caius_kong/ccusage-dashboard --port 9000     # change port
-npx @caius_kong/ccusage-dashboard --budget 500    # monthly budget cap (default $300)
+npx @caius_kong/ccusage-dashboard --budget 500    # monthly budget cap (default $300; also editable in the page)
 npx @caius_kong/ccusage-dashboard --no-warm       # skip background warm-up
 npx @caius_kong/ccusage-dashboard --foreground   # run attached to this terminal (Ctrl+C stops it)
 npx @caius_kong/ccusage-dashboard --stop          # stop the background instance
@@ -77,7 +78,11 @@ launcher exits and the server keeps running, so you can close the terminal. Use
 | **By model** | per-model cost, % of total, in/out/cache-read/cache-write tokens |
 | **30-day trend** | daily cost bar chart (hover for values, weekends marked) |
 | **Sessions** | per-session rows sorted by cost, in three lines: **the label** (`git branch ?? workdir name ?? time`), the fixed fields (local time, session id, agent, driving model, tokens/cache), and — when the session file has one — a grey one-line preview of its first prompt. Shares the top time-filter tabs (today/week/month/custom) |
-| **Budget alert** | monthly cap (default $300) — green <80%, yellow <100%, red ≥100% |
+| **Budget alert** | monthly cap (default $300) — green <80%, yellow <100%, red ≥100%. Double-click the pill (or the cap in the bar) to edit it; set 0 to turn the alert off |
+
+A cap edited in the page is saved to `$XDG_CONFIG_HOME/ccusage-dashboard/config.json`
+(or `~/.config/ccusage-dashboard/config.json`) and restored on the next launch.
+`--budget` / `CCUSAGE_BUDGET` still win for the run they are passed to.
 
 All costs in USD. **Cache hit rate** is the standard input-side metric:
 `cacheReadTokens / (cacheReadTokens + non-cached inputTokens)`. Auto-refresh every 60s on the

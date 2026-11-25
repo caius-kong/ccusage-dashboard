@@ -5,7 +5,7 @@ ccusage-ui — a tiny zero-dependency local dashboard for ccusage.
 It shells out to ccusage's JSON reports and renders:
   - today / this week / this month / custom range, grouped by model
   - a 30-day cost trend chart
-  - a monthly budget alert (default cap: $300)
+  - a monthly budget alert (default cap: $300, editable from the page)
 
 Because all numbers come from ccusage itself, the figures always match what
 `ccusage` reports (the source you already trust). No pricing table to maintain,
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -74,7 +75,64 @@ def resolve_ccusage() -> list[str]:
 
 _CCUSAGE_PATH_OVERRIDE: str | None = None
 
-BUDGET = 300.0  # monthly cap in USD (override via --budget or CCUSAGE_BUDGET)
+BUDGET = 300.0  # monthly cap in USD (override via --budget, CCUSAGE_BUDGET, or the page)
+
+
+# --- the budget is the one setting the dashboard owns -----------------------
+#
+# Every cost/token number still comes from ccusage, but the cap itself is ours,
+# and the page can edit it. An in-memory value would silently revert on the next
+# launch (the launcher replaces the daemon on upgrade), so a page edit is saved
+# to the user config dir and loaded at startup. Precedence, most specific first:
+# --budget > CCUSAGE_BUDGET > saved value > 300. A UI edit always saves, so a cap
+# set on the page survives even when that launch was started with a flag (the
+# flag still wins for THAT run — it is the more explicit instruction).
+def _config_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
+    return Path(base) / "ccusage-dashboard" / "config.json"
+
+
+def validate_budget(raw) -> float:
+    """Coerce one user-supplied budget to a sane USD number, or raise ValueError.
+
+    0 is allowed and means "no cap": the UI then hides the alert instead of
+    dividing by zero. Bools are rejected on purpose — True would coerce to 1.
+    """
+    if raw is None or isinstance(raw, bool):
+        raise ValueError("budget must be a number")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("budget must be a number") from None
+    if not math.isfinite(value) or value < 0 or value > 1_000_000:
+        raise ValueError("budget must be between 0 and 1,000,000 USD")
+    return round(value, 2)
+
+
+def load_saved_budget(path: Path | None = None) -> float | None:
+    """The saved cap, or None when there is no usable saved value.
+
+    A missing/corrupt/out-of-range file is not an error: the dashboard still has
+    to start, so the caller falls back to the next source in the precedence.
+    """
+    try:
+        payload = json.loads((path or _config_path()).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        return validate_budget(payload.get("budget"))
+    except (OSError, ValueError):
+        return None
+
+
+def save_budget(value: float, path: Path | None = None) -> Path:
+    """Write the cap atomically, so a crash mid-write cannot leave half a file."""
+    target = path or _config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"budget": value}), encoding="utf-8")
+    tmp.replace(target)
+    return target
+
 
 # Refresh cadence is driven by the browser (lib/index.html), which polls the
 # ACTIVE view only. Only the default Today view needs re-scanning every minute;
@@ -724,8 +782,39 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _json(self, obj: dict) -> None:
-        self._send(200, json.dumps(obj).encode(), "application/json")
+    def _json(self, obj: dict, code: int = 200) -> None:
+        self._send(code, json.dumps(obj).encode(), "application/json")
+
+    def do_POST(self):  # noqa: N802
+        path, _, _ = self.path.partition("?")
+        if path != "/api/budget":
+            self._send(404, b"not found", "text/plain")
+            return
+        # Require a JSON body: a cross-origin HTML form cannot send this type
+        # without a preflighted request, and this server answers no preflight,
+        # so a random page the user has open cannot rewrite their budget.
+        if "json" not in self.headers.get("Content-Type", "").lower():
+            self._json({"error": "Content-Type must be application/json"}, 415)
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length < 0 or length > 4096:
+                raise ValueError("bad body length")
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError("body must be a JSON object")
+            value = validate_budget(payload.get("budget"))
+        except ValueError as exc:
+            self._json({"error": f"invalid budget: {exc}"}, 400)
+            return
+        global BUDGET
+        try:
+            saved_to = save_budget(value)
+        except OSError as exc:
+            self._json({"error": f"could not save the budget: {exc}"}, 500)
+            return
+        BUDGET = value
+        self._json({"budget": BUDGET, "savedTo": str(saved_to)})
 
     def do_GET(self):  # noqa: N802
         path, _, query = self.path.partition("?")
@@ -784,13 +873,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="ccusage dashboard")
     parser.add_argument("--port", type=int, default=8799)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--budget", type=float, default=None, help="monthly budget cap in USD (default 300)")
+    parser.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        help="monthly budget cap in USD (default 300, or the value last saved on the page)",
+    )
     parser.add_argument("--ccusage-path", default=None, help="explicit path to a ccusage binary or src/cli.js")
     parser.add_argument("--no-warm", action="store_true", help="skip background warm-up (first requests may be slow)")
     parser.add_argument("--no-update-check", action="store_true", help="disable the npm version hint entirely")
     args = parser.parse_args()
 
-    BUDGET = args.budget if args.budget is not None else float(os_env_budget() or 300.0)
+    # Explicit launch flags are the most specific instruction; otherwise a cap
+    # saved from the page (if any) outranks the built-in 300.
+    if args.budget is not None:
+        BUDGET = args.budget
+    else:
+        env_budget = os_env_budget()
+        saved = load_saved_budget() if not env_budget else None
+        BUDGET = float(env_budget) if env_budget else (saved if saved is not None else 300.0)
     _CCUSAGE_PATH_OVERRIDE = args.ccusage_path
     if args.no_update_check:
         UPDATE_CHECKS = False

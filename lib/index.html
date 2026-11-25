@@ -25,7 +25,15 @@
   .tab:hover{color:var(--text)}
   .tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .tab-budget{margin-left:auto;display:flex;align-items:center;gap:10px}
-  .budget-pill{border-radius:999px;padding:4px 12px;font-size:12px;font-weight:600;border:1px solid var(--border)}
+  .budget-pill{border-radius:999px;padding:4px 12px;font-size:12px;font-weight:600;border:1px solid var(--border);cursor:pointer;user-select:none;transition:border-color .15s,color .15s}
+  /* The cap is editable in place: double-click the pill (or the band's cap). */
+  .budget-pill:hover{border-color:var(--accent);color:var(--text)}
+  .budget-pill::after{content:" ✎";opacity:0;transition:opacity .15s}
+  .budget-pill:hover::after,.budget-pill:focus-visible::after{opacity:1}
+  .budget-pill:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #bgCap{cursor:pointer}
+  #bgCap::after{content:" ✎";color:var(--muted);font-weight:400;font-size:11px;opacity:0;transition:opacity .15s}
+  #bgCap:hover::after{opacity:1}
   .budget-ok{color:var(--green);border-color:var(--border)}
   .budget-warn{color:var(--yellow);border-color:var(--yellow)}
   .budget-danger{color:#fff;background:var(--red);border-color:var(--red)}
@@ -61,13 +69,20 @@
   .modal .body{color:var(--text);font-size:13px;line-height:1.55}
   .cmd{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin:12px 0}
   .cmd code{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--text);word-break:break-all}
-  .modal .foot{display:flex;justify-content:flex-end;margin-top:16px}
+  .modal .foot{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
   .hint{color:var(--muted);font-size:12px;margin-top:14px;text-align:center}
   .range{display:flex;gap:8px;align-items:center;margin-left:6px;flex-wrap:wrap}
   .range input{background:var(--panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:12px;font-family:inherit}
   .range button{background:var(--panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px}
   .range button:hover{border-color:var(--accent)}
   .range button.active{background:var(--accent);border-color:var(--accent);color:#0d1117;font-weight:600}
+  .budget-field{display:flex;align-items:center;gap:7px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-top:12px}
+  .budget-field:focus-within{border-color:var(--accent)}
+  .budget-field span{color:var(--muted);font-size:16px}
+  .budget-field input{flex:1;min-width:0;background:transparent;border:none;outline:none;color:var(--text);font-family:inherit;font-size:18px;font-variant-numeric:tabular-nums}
+  .budget-field input::-webkit-outer-spin-button,.budget-field input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  .budget-help{color:var(--muted);font-size:12px;margin-top:8px}
+  .budget-err{color:var(--red);font-size:12px;margin-top:8px;min-height:16px}
   .sessid{font-variant-numeric:tabular-nums;letter-spacing:.3px;cursor:pointer;transition:background .15s,border-color .15s,color .15s}
   .sessid:hover{background:var(--accent);border-color:var(--accent);color:#0d1117}
   .sessid.copied{background:var(--green);border-color:var(--green);color:#0d1117}
@@ -101,12 +116,12 @@
   <div class="tab" role="tab" tabindex="0" aria-selected="false" data-tab="month">This Month</div>
   <div class="tab" role="tab" tabindex="0" aria-selected="false" data-tab="range">Custom Range</div>
   <div class="tab-budget">
-    <span class="budget-pill" id="budgetPill">budget …</span>
+    <span class="budget-pill" id="budgetPill" role="button" tabindex="0" title="double-click to edit the monthly budget">budget …</span>
   </div>
 </div>
 
 <div id="budgetBand" class="budget-band" style="display:none">
-  <div class="bl"><span>Monthly budget: <b id="bgCap"></b></span><span id="bgUsed"></span></div>
+  <div class="bl"><span>Monthly budget: <b id="bgCap" title="double-click to edit the monthly budget"></b></span><span id="bgUsed"></span></div>
   <div class="bgtrack"><div id="bgFill" style="width:0%"></div></div>
 </div>
 
@@ -141,6 +156,18 @@
 
 <div class="hint">auto-refresh 60s · costs in USD · <span id="lastUpd"></span></div>
 
+<div class="modal-mask" id="budgetModal" style="display:none">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="budgetTitle">
+    <h3 id="budgetTitle">Monthly budget</h3>
+    <div class="body">
+      <label class="budget-field"><span>$</span><input id="budgetInput" type="number" min="0" step="10" inputmode="decimal" autocomplete="off" aria-label="Monthly budget in USD"></label>
+      <div class="budget-help">USD per month. Set 0 to turn the budget alert off.</div>
+      <div class="budget-err" id="budgetErr"></div>
+    </div>
+    <div class="foot"><button class="btn" id="budgetCancel" type="button">Cancel</button><button class="btn primary" id="budgetSave" type="button">Save</button></div>
+  </div>
+</div>
+
 <div class="modal-mask" id="updModal" style="display:none">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="updTitle">
     <h3 id="updTitle"></h3>
@@ -152,7 +179,7 @@
 <script>
 const $=(id)=>document.getElementById(id);
 const tabs={today:{label:"Today",len:0},week:{label:"This Week",len:0},month:{label:"This Month",len:0},range:{label:"Custom Range",len:1}};
-let active="today", modelCtx=[];
+let active="today", modelCtx=[], lastMonth=null;
 
 const PKG_NPM="@caius_kong/ccusage-dashboard";
 const CMD_UPDATE=`npx ${PKG_NPM}@latest`;
@@ -267,8 +294,9 @@ function renderModels(data){
 }
 
 function applyBudget(month){
+  lastMonth=month; // the editor opens on the latest month data (cap + spend)
   const cap=month.budget;
-  if(!cap){$("budgetBand").style.display="none";$("budgetPill").textContent="budget: —";return;}
+  if(!cap){$("budgetBand").style.display="none";const p=$("budgetPill");p.className="budget-pill";p.textContent="budget: —";p.title="double-click to set a monthly budget";return;}
   const spent=month.totalCost||0, pct=month.budgetUsedPct||0;
   $("bgCap").textContent=fmtUsd(cap);
   $("bgUsed").textContent=`${fmtUsd(spent)} spent · ${pct.toFixed(1)}% of budget`;
@@ -279,7 +307,41 @@ function applyBudget(month){
   let cls="budget-ok",txt=`budget ${fmtUsd(cap)} · ${pct.toFixed(0)}%`,tip=`${fmtUsd(spent)} of ${fmtUsd(cap)} (${pct.toFixed(1)}%)`;
   if(pct>=100){cls="budget-danger";txt=`⚠ ${fmtUsd(spent)} ≥ budget`;tip=`${fmtUsd(spent)} spent · ${pct.toFixed(1)}% of ${fmtUsd(cap)} budget`;}
   else if(pct>=80){cls="budget-warn";txt=`${fmtUsd(spent)} / ${fmtUsd(cap)} (${pct.toFixed(0)}%)`;tip=`${fmtUsd(spent)} of ${fmtUsd(cap)} (${pct.toFixed(1)}%)`;}
-  const p=$("budgetPill");p.className="budget-pill "+cls;p.textContent=txt;p.title=tip;
+  const p=$("budgetPill");p.className="budget-pill "+cls;p.textContent=txt;p.title=tip+" · double-click to edit";
+}
+
+// The cap is the dashboard's own setting (every cost number still comes from
+// ccusage), so the page edits it in place. Saving goes through the server,
+// which persists it to the user config dir — a reload or a daemon restart keeps
+// the new cap. The month response is re-summarised per request, so the pill
+// picks the new cap up on the next fetch without waiting for a cache expiry.
+function openBudgetEditor(){
+  $("budgetInput").value=lastMonth&&lastMonth.budget!=null?String(lastMonth.budget):"";
+  $("budgetErr").textContent="";
+  $("budgetModal").style.display="flex";
+  const inp=$("budgetInput");inp.focus();inp.select();
+}
+function closeBudgetEditor(){$("budgetModal").style.display="none";}
+async function saveBudget(){
+  const raw=$("budgetInput").value.trim();
+  const val=raw===""?0:Number(raw);
+  if(!Number.isFinite(val)||val<0){$("budgetErr").textContent="Enter a non-negative number.";return;}
+  const btn=$("budgetSave");btn.disabled=true;
+  try{
+    const res=await fetch("/api/budget",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({budget:val})});
+    const d=await res.json();
+    if(!res.ok||d.error){$("budgetErr").textContent=d.error||"Could not save the budget.";return;}
+    closeBudgetEditor();
+    // Repaint immediately; the next auxTick re-fetches the authoritative month.
+    if(lastMonth){
+      const spent=lastMonth.totalCost||0;
+      applyBudget({...lastMonth,budget:d.budget,budgetUsedPct:d.budget?Math.round((spent/d.budget)*1000)/10:0});
+    }else{
+      auxTick();
+    }
+  }catch(e){
+    $("budgetErr").textContent="Could not reach the dashboard server.";
+  }finally{btn.disabled=false;}
 }
 
 async function loadSessions(){
@@ -528,6 +590,14 @@ document.querySelectorAll(".tab").forEach(t=>{
   t.addEventListener("keydown",(e)=>{if(e.key==="Enter"||e.key===" "||e.key==="Spacebar"){e.preventDefault();activate();}});
 });
 $("rangeGo").addEventListener("click",rangeApply);
+$("budgetPill").addEventListener("dblclick",openBudgetEditor);
+$("budgetPill").addEventListener("keydown",(e)=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();openBudgetEditor();}});
+$("bgCap").addEventListener("dblclick",openBudgetEditor);
+$("budgetCancel").addEventListener("click",closeBudgetEditor);
+$("budgetSave").addEventListener("click",saveBudget);
+$("budgetModal").addEventListener("click",(e)=>{if(e.target.id==="budgetModal")closeBudgetEditor();});
+$("budgetInput").addEventListener("keydown",(e)=>{if(e.key==="Enter"){e.preventDefault();saveBudget();}});
+document.addEventListener("keydown",(e)=>{if(e.key==="Escape"&&$("budgetModal").style.display!=="none")closeBudgetEditor();});
 $("updBtn").addEventListener("click",checkUpdate);
 $("updOk").addEventListener("click",hideUpdModal);
 $("updModal").addEventListener("click",(e)=>{if(e.target.id==="updModal")hideUpdModal();});
